@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Breakpoint Test</title>
+</head>
+<body>
+  <h1>Breakpoint Test Page</h1>
+  <button id="trigger">Trigger Function</button>
+  <div id="result"></div>
+
+  <script>
+    function targetFunction() {
+      const x = 10;
+      const y = 20;
+      const sum = x + y;
+      console.log('Sum:', sum);
+      document.getElementById('result').textContent = `Sum: ${sum}`;
+      return sum;
+    }
+
+    function nestedFunction() {
+      console.log('Outer function');
+      innerFunction();
+    }
+
+    function innerFunction() {
+      console.log('Inner function');
+      const value = 42;
+      return value;
+    }
+
+    document.getElementById('trigger').addEventListener('click', function() {
+      console.log('Click handler');
+      targetFunction();
+    });
+  </script>
+</body>
+</html>

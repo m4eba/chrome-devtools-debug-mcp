@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "chrome-devtools-debug": {
+      "command": "node",
+      "args": ["build/index.js"],
+      "cwd": "/home/petschm/dev/devtools-mcp/chrome-devtools-debug"
+    }
+  }
+}

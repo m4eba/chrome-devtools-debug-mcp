@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Network Test</title>
+</head>
+<body>
+  <h1>Network Test Page</h1>
+  <button id="fetch-data">Fetch Data</button>
+  <button id="post-data">POST Data</button>
+  <div id="output"></div>
+
+  <script>
+    document.getElementById('fetch-data').addEventListener('click', async function() {
+      console.log('Fetching data...');
+      try {
+        const response = await fetch('/api/data');
+        const data = await response.json();
+        document.getElementById('output').textContent = JSON.stringify(data);
+        console.log('Data received:', data);
+      } catch (error) {
+        console.error('Fetch failed:', error);
+      }
+    });
+
+    document.getElementById('post-data').addEventListener('click', async function() {
+      console.log('Posting data...');
+      try {
+        const response = await fetch('/api/echo', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ test: 'data' })
+        });
+        const data = await response.json();
+        document.getElementById('output').textContent = JSON.stringify(data);
+        console.log('Response:', data);
+      } catch (error) {
+        console.error('POST failed:', error);
+      }
+    });
+  </script>
+</body>
+</html>

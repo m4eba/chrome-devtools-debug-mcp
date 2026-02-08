@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Fetch Intercept Test</title>
+</head>
+<body>
+  <h1>Fetch Intercept Test</h1>
+  <button id="intercept-me">Make Interceptable Request</button>
+  <div id="result"></div>
+
+  <script>
+    document.getElementById('intercept-me').addEventListener('click', async function() {
+      console.log('Making request to be intercepted...');
+      try {
+        const response = await fetch('/api/intercept-me');
+        const text = await response.text();
+        document.getElementById('result').textContent = text;
+        console.log('Response:', text);
+      } catch (error) {
+        console.error('Request failed:', error);
+        document.getElementById('result').textContent = 'Error: ' + error.message;
+      }
+    });
+  </script>
+</body>
+</html>
