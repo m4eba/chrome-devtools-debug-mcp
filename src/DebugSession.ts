@@ -684,11 +684,15 @@ export class DebugSession extends EventEmitter {
   async fulfillRequest(
     requestId: string,
     responseCode: number,
-    options: { responseHeaders?: Array<{ name: string; value: string }>; body?: string; responsePhrase?: string } = {}
+    options: { responseHeaders?: Array<{ name: string; value: string }>; body?: string; bodyBase64?: string; responsePhrase?: string } = {}
   ): Promise<void> {
     const params: Record<string, unknown> = { requestId, responseCode };
     if (options.responseHeaders) params.responseHeaders = options.responseHeaders;
-    if (options.body) params.body = Buffer.from(options.body).toString('base64');
+    if (options.bodyBase64) {
+      params.body = options.bodyBase64;
+    } else if (options.body) {
+      params.body = Buffer.from(options.body).toString('base64');
+    }
     if (options.responsePhrase) params.responsePhrase = options.responsePhrase;
 
     await this.client.send('Fetch.fulfillRequest', params);

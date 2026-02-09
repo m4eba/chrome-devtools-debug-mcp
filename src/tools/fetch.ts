@@ -1,8 +1,42 @@
 import { z } from 'zod';
+import { readFile } from 'node:fs/promises';
+import { extname } from 'node:path';
 import type { ToolDefinition } from './types.js';
 import { success, error, formatObject } from './types.js';
 import type { InterceptAction } from '../state/FetchInterceptor.js';
 import type { ResourceType } from '../utils/types.js';
+
+const mimeTypes: Record<string, string> = {
+  '.html': 'text/html',
+  '.htm': 'text/html',
+  '.css': 'text/css',
+  '.js': 'application/javascript',
+  '.mjs': 'application/javascript',
+  '.json': 'application/json',
+  '.xml': 'application/xml',
+  '.txt': 'text/plain',
+  '.csv': 'text/csv',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+  '.otf': 'font/otf',
+  '.eot': 'application/vnd.ms-fontobject',
+  '.pdf': 'application/pdf',
+  '.zip': 'application/zip',
+  '.wasm': 'application/wasm',
+};
+
+function getMimeType(filePath: string): string {
+  const ext = extname(filePath).toLowerCase();
+  return mimeTypes[ext] ?? 'application/octet-stream';
+}
 
 export const fetchEnable: ToolDefinition = {
   name: 'fetch_enable',
@@ -215,6 +249,61 @@ export const fulfillRequest: ToolDefinition = {
   },
 };
 
+export const fulfillRequestWithFile: ToolDefinition = {
+  name: 'fulfill_request_with_file',
+  description: 'Respond to a paused request with file contents. Automatically detects Content-Type from file extension.',
+  inputSchema: z.object({
+    requestId: z.string().describe('Request ID from list_paused_requests'),
+    filePath: z.string().describe('Path to the file to serve as response body'),
+    status: z.number().optional().default(200).describe('HTTP status code (default: 200)'),
+    statusText: z.string().optional().describe('HTTP status text'),
+    contentType: z.string().optional().describe('Content-Type header (auto-detected from file extension if not provided)'),
+    headers: z.record(z.string()).optional().describe('Additional response headers'),
+  }),
+  handler: async (session, params) => {
+    const p = params as z.infer<typeof fulfillRequestWithFile.inputSchema>;
+    try {
+      const paused = session.fetchInterceptor.getPausedRequest(p.requestId);
+      if (!paused) {
+        return error('Request not found in paused requests');
+      }
+
+      // Read file contents
+      const fileContent = await readFile(p.filePath);
+
+      // Determine content type
+      const contentType = p.contentType ?? getMimeType(p.filePath);
+
+      // Build headers
+      const headerEntries: Array<{ name: string; value: string }> = [
+        { name: 'Content-Type', value: contentType },
+        { name: 'Content-Length', value: String(fileContent.length) },
+      ];
+
+      if (p.headers) {
+        for (const [name, value] of Object.entries(p.headers as Record<string, string>)) {
+          headerEntries.push({ name, value });
+        }
+      }
+
+      await session.fulfillRequest(p.requestId, p.status ?? 200, {
+        responsePhrase: p.statusText,
+        responseHeaders: headerEntries,
+        bodyBase64: fileContent.toString('base64'),
+      });
+
+      return success(formatObject({
+        message: 'Request fulfilled with file contents',
+        filePath: p.filePath,
+        contentType,
+        size: fileContent.length,
+      }));
+    } catch (e) {
+      return error(e instanceof Error ? e.message : String(e));
+    }
+  },
+};
+
 export const failRequest: ToolDefinition = {
   name: 'fail_request',
   description: 'Fail a paused request with an error.',
@@ -252,5 +341,6 @@ export const fetchTools: ToolDefinition[] = [
   listPausedRequests,
   continueRequest,
   fulfillRequest,
+  fulfillRequestWithFile,
   failRequest,
 ];
