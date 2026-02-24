@@ -7,6 +7,32 @@
   "bin": {
     "chrome-devtools-debug-mcp": "./build/index.js"
   },
+  "files": [
+    "build",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "chrome",
+    "devtools",
+    "debugger",
+    "cdp",
+    "chrome-devtools-protocol",
+    "breakpoints",
+    "network-interception"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/m4eba/chrome-devtools-debug-mcp.git"
+  },
+  "homepage": "https://github.com/m4eba/chrome-devtools-debug-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/m4eba/chrome-devtools-debug-mcp/issues"
+  },
+  "author": "m4eba",
+  "license": "MIT",
   "scripts": {
     "build": "tsc",
     "start": "node build/index.js",
