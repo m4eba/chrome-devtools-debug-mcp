@@ -19,7 +19,7 @@ describe.skipIf(!CHROME_AVAILABLE)('Fetch Interception Integration', () => {
 
   beforeEach(async () => {
     session = new DebugSession({ timeout: 30000 });
-    await session.launch({ headless: true });
+    await session.launch({ headless: true, port: 0 });
     await session.enableNetwork();
     await session.enableRuntime();
   });

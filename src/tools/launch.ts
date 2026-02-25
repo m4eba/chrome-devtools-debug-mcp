@@ -96,9 +96,9 @@ export const disconnect: ToolDefinition = {
 
 export const listTargets: ToolDefinition = {
   name: 'list_targets',
-  description: 'List available debug targets (pages, workers, etc.).',
+  description: 'List all debug targets (pages, workers, service workers, etc.). For just pages/tabs, use list_pages instead.',
   inputSchema: z.object({
-    url: z.string().describe('HTTP URL of Chrome debug endpoint (e.g., http://localhost:9222)'),
+    url: z.string().optional().describe('HTTP URL of Chrome debug endpoint. Uses current connection if omitted.'),
   }),
   handler: async (session, params) => {
     const p = params as z.infer<typeof listTargets.inputSchema>;
@@ -115,54 +115,13 @@ export const getVersionInfo: ToolDefinition = {
   name: 'get_version',
   description: 'Get Chrome version and protocol version.',
   inputSchema: z.object({
-    url: z.string().describe('HTTP URL of Chrome debug endpoint (e.g., http://localhost:9222)'),
+    url: z.string().optional().describe('HTTP URL of Chrome debug endpoint. Uses current connection if omitted.'),
   }),
   handler: async (session, params) => {
     const p = params as z.infer<typeof getVersionInfo.inputSchema>;
     try {
       const version = await session.getVersion(p.url);
       return success(formatObject(version));
-    } catch (e) {
-      return error(e instanceof Error ? e.message : String(e));
-    }
-  },
-};
-
-export const navigate: ToolDefinition = {
-  name: 'navigate',
-  description: 'Navigate the page to a URL.',
-  inputSchema: z.object({
-    url: z.string().describe('URL to navigate to'),
-  }),
-  handler: async (session, params) => {
-    const p = params as z.infer<typeof navigate.inputSchema>;
-    try {
-      const result = await session.navigate(p.url);
-      if (result.errorText) {
-        return error(`Navigation failed: ${result.errorText}`);
-      }
-      return success(formatObject({
-        status: 'navigated',
-        frameId: result.frameId,
-        loaderId: result.loaderId,
-      }));
-    } catch (e) {
-      return error(e instanceof Error ? e.message : String(e));
-    }
-  },
-};
-
-export const reload: ToolDefinition = {
-  name: 'reload',
-  description: 'Reload the current page.',
-  inputSchema: z.object({
-    ignoreCache: z.boolean().optional().describe('Ignore cache when reloading. Default: false'),
-  }),
-  handler: async (session, params) => {
-    const p = params as z.infer<typeof reload.inputSchema>;
-    try {
-      await session.reload(p.ignoreCache);
-      return success('Page reloaded');
     } catch (e) {
       return error(e instanceof Error ? e.message : String(e));
     }
@@ -176,6 +135,4 @@ export const launchTools: ToolDefinition[] = [
   disconnect,
   listTargets,
   getVersionInfo,
-  navigate,
-  reload,
 ];

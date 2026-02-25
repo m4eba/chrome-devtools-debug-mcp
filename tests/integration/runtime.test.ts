@@ -19,7 +19,7 @@ describe.skipIf(!CHROME_AVAILABLE)('Runtime Integration', () => {
 
   beforeEach(async () => {
     session = new DebugSession({ timeout: 30000 });
-    await session.launch({ headless: true });
+    await session.launch({ headless: true, port: 0 });
     await session.enableRuntime();
   });
 

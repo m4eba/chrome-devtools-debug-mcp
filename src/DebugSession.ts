@@ -44,6 +44,7 @@ export class DebugSession extends EventEmitter {
   private launchResult: LaunchResult | null = null;
   private targetId: string | null = null;
   private sessionId: string | null = null;
+  private httpEndpoint: string | null = null;
 
   // State managers
   readonly debugState: DebugState;
@@ -260,6 +261,21 @@ export class DebugSession extends EventEmitter {
       this.emit('documentUpdated');
     });
 
+    // Page events
+    this.client.on('Page.javascriptDialogOpening', (params: {
+      url: string;
+      message: string;
+      type: 'alert' | 'confirm' | 'prompt' | 'beforeunload';
+      hasBrowserHandler: boolean;
+      defaultPrompt?: string;
+    }) => {
+      this.emit('dialogOpened', params);
+    });
+
+    this.client.on('Page.javascriptDialogClosed', (params: { result: boolean; userInput: string }) => {
+      this.emit('dialogClosed', params);
+    });
+
     // Connection events
     this.client.on('close', () => {
       this.emit('disconnected');
@@ -269,11 +285,13 @@ export class DebugSession extends EventEmitter {
   // Connection management
   async launch(options: LaunchOptions = {}): Promise<{ wsEndpoint: string; port: number }> {
     this.launchResult = await launchChrome(options);
-    const targets = await getTargets(`http://127.0.0.1:${this.launchResult.port}`);
+    this.httpEndpoint = `http://127.0.0.1:${this.launchResult.port}`;
+    const targets = await getTargets(this.httpEndpoint);
     const pageTarget = targets.find((t) => t.type === 'page');
 
     if (pageTarget?.webSocketDebuggerUrl) {
       await this.client.connect(pageTarget.webSocketDebuggerUrl);
+      this.targetId = pageTarget.id;
     } else {
       throw new Error('No page target found');
     }
@@ -289,6 +307,7 @@ export class DebugSession extends EventEmitter {
   }
 
   async connectToTarget(httpUrl: string, targetId?: string): Promise<TargetInfo> {
+    this.httpEndpoint = httpUrl;
     const targets = await getTargets(httpUrl);
     let target: typeof targets[0] | undefined;
 
@@ -349,27 +368,119 @@ export class DebugSession extends EventEmitter {
     this.documentNodeId = null;
     this.targetId = null;
     this.sessionId = null;
+    this.httpEndpoint = null;
   }
 
   // Target management
-  async listTargets(httpUrl: string): Promise<TargetInfo[]> {
-    const targets = await getTargets(httpUrl);
+  async listTargets(httpUrl?: string): Promise<TargetInfo[]> {
+    const endpoint = httpUrl ?? this.httpEndpoint;
+    if (!endpoint) {
+      throw new Error('No HTTP endpoint available. Launch Chrome or connect first.');
+    }
+    const targets = await getTargets(endpoint);
     return targets.map((t) => ({
       targetId: t.id,
       type: t.type as TargetInfo['type'],
       title: t.title,
       url: t.url,
-      attached: false,
+      attached: t.id === this.targetId,
       canAccessOpener: false,
     }));
   }
 
-  async getVersion(httpUrl: string): Promise<{ browser: string; protocolVersion: string }> {
-    const version = await getVersion(httpUrl);
+  async getVersion(httpUrl?: string): Promise<{ browser: string; protocolVersion: string }> {
+    const endpoint = httpUrl ?? this.httpEndpoint;
+    if (!endpoint) {
+      throw new Error('No HTTP endpoint available. Launch Chrome or connect first.');
+    }
+    const version = await getVersion(endpoint);
     return {
       browser: version.Browser,
       protocolVersion: version['Protocol-Version'],
     };
+  }
+
+  async createTarget(url: string): Promise<TargetInfo> {
+    if (!this.httpEndpoint) {
+      throw new Error('No HTTP endpoint available. Launch Chrome or connect first.');
+    }
+
+    // Use Target.createTarget via CDP
+    const result = await this.client.send<{ targetId: string }>('Target.createTarget', { url });
+
+    // Get the full target info
+    const targets = await getTargets(this.httpEndpoint);
+    const target = targets.find((t) => t.id === result.targetId);
+
+    if (!target) {
+      throw new Error('Created target not found');
+    }
+
+    return {
+      targetId: target.id,
+      type: target.type as TargetInfo['type'],
+      title: target.title,
+      url: target.url,
+      attached: false,
+      canAccessOpener: false,
+    };
+  }
+
+  async closeTarget(targetId: string): Promise<boolean> {
+    const result = await this.client.send<{ success: boolean }>('Target.closeTarget', { targetId });
+    return result.success;
+  }
+
+  async switchTarget(targetId: string): Promise<TargetInfo> {
+    if (!this.httpEndpoint) {
+      throw new Error('No HTTP endpoint available. Launch Chrome or connect first.');
+    }
+
+    // Get target info first
+    const targets = await getTargets(this.httpEndpoint);
+    const target = targets.find((t) => t.id === targetId);
+
+    if (!target) {
+      throw new Error('Target not found');
+    }
+
+    if (!target.webSocketDebuggerUrl) {
+      throw new Error('Target has no WebSocket URL');
+    }
+
+    // Disconnect from current target (but don't reset httpEndpoint)
+    this.client.disconnect();
+    this.debugState.reset();
+    this.scriptRegistry.clear();
+    this.networkState.clear();
+    this.fetchInterceptor.reset();
+    this.consoleState.clear();
+    this.logEntries = [];
+    this.serviceWorkerRegistrations.clear();
+    this.serviceWorkerVersions.clear();
+    this.documentNodeId = null;
+    this.sessionId = null;
+
+    // Connect to new target
+    await this.client.connect(target.webSocketDebuggerUrl);
+    this.targetId = target.id;
+
+    return {
+      targetId: target.id,
+      type: target.type as TargetInfo['type'],
+      title: target.title,
+      url: target.url,
+      attached: true,
+      canAccessOpener: false,
+    };
+  }
+
+  getCurrentTargetId(): string | null {
+    return this.targetId;
+  }
+
+  getHttpEndpoint(): string | null {
+    return this.httpEndpoint;
   }
 
   // Debugger domain
@@ -898,13 +1009,91 @@ export class DebugSession extends EventEmitter {
     return Array.from(this.serviceWorkerVersions.values());
   }
 
-  // Page navigation
+  // Page domain
+  async enablePage(): Promise<void> {
+    await this.client.send('Page.enable');
+  }
+
+  async disablePage(): Promise<void> {
+    await this.client.send('Page.disable');
+  }
+
   async navigate(url: string): Promise<{ frameId: string; loaderId?: string; errorText?: string }> {
     return this.client.send('Page.navigate', { url });
   }
 
   async reload(ignoreCache?: boolean): Promise<void> {
     await this.client.send('Page.reload', { ignoreCache });
+  }
+
+  async addScriptToEvaluateOnNewDocument(
+    source: string,
+    options: { worldName?: string; includeCommandLineAPI?: boolean; runImmediately?: boolean } = {}
+  ): Promise<{ identifier: string }> {
+    return this.client.send('Page.addScriptToEvaluateOnNewDocument', {
+      source,
+      worldName: options.worldName,
+      includeCommandLineAPI: options.includeCommandLineAPI,
+      runImmediately: options.runImmediately,
+    });
+  }
+
+  async removeScriptToEvaluateOnNewDocument(identifier: string): Promise<void> {
+    await this.client.send('Page.removeScriptToEvaluateOnNewDocument', { identifier });
+  }
+
+  async captureScreenshot(options: {
+    format?: 'jpeg' | 'png' | 'webp';
+    quality?: number;
+    clip?: { x: number; y: number; width: number; height: number; scale?: number };
+    fromSurface?: boolean;
+    captureBeyondViewport?: boolean;
+    optimizeForSpeed?: boolean;
+  } = {}): Promise<{ data: string }> {
+    return this.client.send('Page.captureScreenshot', {
+      format: options.format ?? 'png',
+      quality: options.quality,
+      clip: options.clip,
+      fromSurface: options.fromSurface ?? true,
+      captureBeyondViewport: options.captureBeyondViewport,
+      optimizeForSpeed: options.optimizeForSpeed,
+    });
+  }
+
+  async captureSnapshot(format?: 'mhtml'): Promise<{ data: string }> {
+    return this.client.send('Page.captureSnapshot', { format: format ?? 'mhtml' });
+  }
+
+  async createIsolatedWorld(
+    frameId: string,
+    options: { worldName?: string; grantUniveralAccess?: boolean } = {}
+  ): Promise<{ executionContextId: number }> {
+    return this.client.send('Page.createIsolatedWorld', {
+      frameId,
+      worldName: options.worldName,
+      grantUniveralAccess: options.grantUniveralAccess,
+    });
+  }
+
+  async getFrameTree(): Promise<{ frameTree: { frame: { id: string; parentId?: string; loaderId: string; name?: string; url: string; securityOrigin?: string; mimeType?: string }; childFrames?: unknown[] } }> {
+    return this.client.send('Page.getFrameTree');
+  }
+
+  async handleJavaScriptDialog(accept: boolean, promptText?: string): Promise<void> {
+    await this.client.send('Page.handleJavaScriptDialog', { accept, promptText });
+  }
+
+  // Note: deleteCookie is actually in Network domain
+  async deleteCookies(
+    name: string,
+    options: { url?: string; domain?: string; path?: string } = {}
+  ): Promise<void> {
+    await this.client.send('Network.deleteCookies', {
+      name,
+      url: options.url,
+      domain: options.domain,
+      path: options.path,
+    });
   }
 
   // Send raw CDP command

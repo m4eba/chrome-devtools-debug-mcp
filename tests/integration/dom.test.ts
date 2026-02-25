@@ -19,7 +19,7 @@ describe.skipIf(!CHROME_AVAILABLE)('DOM Integration', () => {
 
   beforeEach(async () => {
     session = new DebugSession({ timeout: 30000 });
-    await session.launch({ headless: true });
+    await session.launch({ headless: true, port: 0 });
     await session.enableDOM();
   });
 
@@ -123,7 +123,7 @@ describe.skipIf(!CHROME_AVAILABLE)('DOMDebugger Integration', () => {
 
   beforeEach(async () => {
     session = new DebugSession({ timeout: 30000 });
-    await session.launch({ headless: true });
+    await session.launch({ headless: true, port: 0 });
     await session.enableDOM();
     await session.enableDebugger();
     await session.enableRuntime();

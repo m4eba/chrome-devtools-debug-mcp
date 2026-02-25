@@ -165,6 +165,10 @@ export async function launchChrome(options: LaunchOptions = {}): Promise<LaunchR
 
   debug('Chrome launched, WebSocket endpoint: %s', wsEndpoint);
 
+  // Parse actual port from wsEndpoint (e.g., ws://127.0.0.1:45678/devtools/...)
+  const portMatch = wsEndpoint.match(/:(\d+)\//);
+  const actualPort = portMatch ? parseInt(portMatch[1], 10) : port;
+
   const kill = async (): Promise<void> => {
     return new Promise((resolve) => {
       if (chromeProcess.killed) {
@@ -194,7 +198,7 @@ export async function launchChrome(options: LaunchOptions = {}): Promise<LaunchR
     process: chromeProcess,
     wsEndpoint,
     userDataDir,
-    port,
+    port: actualPort,
     kill,
   };
 }

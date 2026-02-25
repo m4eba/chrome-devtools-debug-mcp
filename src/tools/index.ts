@@ -1,5 +1,7 @@
 export { type ToolDefinition, type ToolResult, success, error, formatObject } from './types.js';
 export { launchTools } from './launch.js';
+export { targetTools } from './target.js';
+export { pageTools } from './page.js';
 export { debuggerTools } from './debugger.js';
 export { runtimeTools } from './runtime.js';
 export { networkTools } from './network.js';
@@ -11,6 +13,8 @@ export { logTools } from './log.js';
 export { serviceWorkerTools } from './service-worker.js';
 
 import { launchTools } from './launch.js';
+import { targetTools } from './target.js';
+import { pageTools } from './page.js';
 import { debuggerTools } from './debugger.js';
 import { runtimeTools } from './runtime.js';
 import { networkTools } from './network.js';
@@ -24,6 +28,8 @@ import type { ToolDefinition } from './types.js';
 
 export const allTools: ToolDefinition[] = [
   ...launchTools,
+  ...targetTools,
+  ...pageTools,
   ...debuggerTools,
   ...runtimeTools,
   ...networkTools,

@@ -19,7 +19,7 @@ Add to your MCP client configuration:
 
 ## Tools Reference
 
-### Browser / Page Management
+### Browser / Connection
 
 | Tool | Description |
 |------|-------------|
@@ -27,10 +27,33 @@ Add to your MCP client configuration:
 | `stop_chrome` | Stop the Chrome process started with `start_chrome` |
 | `connect` | Connect to an existing Chrome instance |
 | `disconnect` | Disconnect from Chrome without stopping the browser |
-| `list_targets` | List available debug targets (pages, workers, etc.) |
 | `get_version` | Get Chrome version and protocol version |
-| `navigate` | Navigate the page to a URL |
+
+### Target Domain
+
+Manage browser targets (pages/tabs).
+
+| Tool | Description |
+|------|-------------|
+| `list_targets` | List all targets (pages, workers, etc.) |
+| `create_target` | Create a new target (page/tab) |
+| `switch_target` | Switch to a different target (page/tab) |
+| `close_target` | Close a target (page/tab) |
+
+### Page Domain
+
+| Tool | Description |
+|------|-------------|
+| `navigate` | Navigate the current page to a URL |
 | `reload` | Reload the current page |
+| `capture_screenshot` | Capture a screenshot (png/jpeg/webp), optionally clipped to a region |
+| `capture_snapshot` | Capture full page as MHTML (includes HTML, CSS, images) |
+| `get_frame_tree` | Get the frame hierarchy including all iframes |
+| `create_isolated_world` | Create an isolated JS execution context in a frame |
+| `add_script_on_new_document` | Add a script to run on every new document |
+| `remove_script_on_new_document` | Remove a script added with add_script_on_new_document |
+| `handle_dialog` | Handle JavaScript dialogs (alert, confirm, prompt) |
+| `delete_cookie` | Delete a browser cookie by name |
 
 ### Debugger Domain
 
