@@ -8,8 +8,11 @@ export interface ToolDefinition {
   handler: (session: DebugSession, params: unknown) => Promise<ToolResult>;
 }
 
+export type TextContent = { type: 'text'; text: string };
+export type ImageContent = { type: 'image'; data: string; mimeType: string };
+
 export interface ToolResult {
-  content: Array<{ type: 'text'; text: string }>;
+  content: Array<TextContent | ImageContent>;
   isError?: boolean;
   [key: string]: unknown;
 }
@@ -24,4 +27,8 @@ export function error(message: string): ToolResult {
 
 export function formatObject(obj: unknown, indent = 2): string {
   return JSON.stringify(obj, null, indent);
+}
+
+export function image(data: string, mimeType: string): ToolResult {
+  return { content: [{ type: 'image', data, mimeType }] };
 }

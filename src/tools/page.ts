@@ -1,6 +1,11 @@
 import { z } from 'zod';
+import { writeFile, mkdir } from 'fs/promises';
+import { tmpdir } from 'os';
+import { join, dirname } from 'path';
 import type { ToolDefinition } from './types.js';
-import { success, error, formatObject } from './types.js';
+import { success, error, formatObject, image } from './types.js';
+
+const ONE_MB = 1024 * 1024;
 
 export const navigate: ToolDefinition = {
   name: 'navigate',
@@ -90,7 +95,7 @@ export const removeScriptOnNewDocument: ToolDefinition = {
 
 export const captureScreenshot: ToolDefinition = {
   name: 'capture_screenshot',
-  description: 'Capture a screenshot of the page. Returns base64-encoded image data.',
+  description: 'Capture a screenshot of the page. Large screenshots (>=1MB) are automatically saved to a temp file to avoid token limits.',
   inputSchema: z.object({
     format: z.enum(['jpeg', 'png', 'webp']).optional().describe('Image format. Default: png'),
     quality: z.number().min(0).max(100).optional().describe('Compression quality (0-100). Only for jpeg/webp.'),
@@ -103,23 +108,47 @@ export const captureScreenshot: ToolDefinition = {
     }).optional().describe('Capture a specific region. Use get_box_model to get element coordinates.'),
     captureBeyondViewport: z.boolean().optional().describe('Capture content beyond viewport'),
     optimizeForSpeed: z.boolean().optional().describe('Optimize for speed over quality'),
+    filePath: z.string().optional().describe('Save screenshot to this file path instead of returning data'),
   }),
   handler: async (session, params) => {
     const p = params as z.infer<typeof captureScreenshot.inputSchema>;
     try {
+      const format = p.format ?? 'png';
       const result = await session.captureScreenshot({
-        format: p.format,
+        format,
         quality: p.quality,
         clip: p.clip,
         captureBeyondViewport: p.captureBeyondViewport,
         optimizeForSpeed: p.optimizeForSpeed,
       });
 
-      return success(formatObject({
-        format: p.format ?? 'png',
-        dataLength: result.data.length,
-        data: result.data,
-      }));
+      const buffer = Buffer.from(result.data, 'base64');
+      const byteSize = buffer.length;
+
+      // If filePath provided, save there
+      if (p.filePath) {
+        await mkdir(dirname(p.filePath), { recursive: true });
+        await writeFile(p.filePath, buffer);
+        return success(formatObject({
+          format,
+          byteSize,
+          savedTo: p.filePath,
+        }));
+      }
+
+      // If large (>=1MB), auto-save to temp file as safety net
+      if (byteSize >= ONE_MB) {
+        const tempPath = join(tmpdir(), `screenshot-${Date.now()}.${format}`);
+        await writeFile(tempPath, buffer);
+        return success(formatObject({
+          format,
+          byteSize,
+          savedTo: tempPath,
+        }));
+      }
+
+      // Return as image content (MCP handles images efficiently)
+      return image(result.data, `image/${format}`);
     } catch (e) {
       return error(e instanceof Error ? e.message : String(e));
     }
@@ -128,15 +157,43 @@ export const captureScreenshot: ToolDefinition = {
 
 export const captureSnapshot: ToolDefinition = {
   name: 'capture_snapshot',
-  description: 'Capture a full page snapshot as MHTML (includes HTML, CSS, images). Useful for archiving pages.',
-  inputSchema: z.object({}),
-  handler: async (session) => {
+  description: 'Capture a full page snapshot as MHTML (includes HTML, CSS, images). Useful for archiving pages. Large snapshots (>=1MB) are automatically saved to a temp file.',
+  inputSchema: z.object({
+    filePath: z.string().optional().describe('Save snapshot to this file path instead of returning data'),
+  }),
+  handler: async (session, params) => {
+    const p = params as z.infer<typeof captureSnapshot.inputSchema>;
     try {
       const result = await session.captureSnapshot('mhtml');
+      const byteSize = Buffer.byteLength(result.data, 'utf8');
 
+      // If filePath provided, save there
+      if (p.filePath) {
+        await mkdir(dirname(p.filePath), { recursive: true });
+        await writeFile(p.filePath, result.data, 'utf8');
+        return success(formatObject({
+          format: 'mhtml',
+          byteSize,
+          savedTo: p.filePath,
+        }));
+      }
+
+      // If large (>=1MB), auto-save to temp file
+      if (byteSize >= ONE_MB) {
+        const tempPath = join(tmpdir(), `snapshot-${Date.now()}.mhtml`);
+        await writeFile(tempPath, result.data, 'utf8');
+        return success(formatObject({
+          format: 'mhtml',
+          byteSize,
+          savedTo: tempPath,
+          note: 'Snapshot was large (>=1MB) and saved to temp file to avoid token limits',
+        }));
+      }
+
+      // Small file, return inline
       return success(formatObject({
         format: 'mhtml',
-        dataLength: result.data.length,
+        byteSize,
         data: result.data,
       }));
     } catch (e) {
