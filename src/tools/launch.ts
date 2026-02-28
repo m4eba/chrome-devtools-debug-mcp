@@ -10,7 +10,7 @@ export const startChrome: ToolDefinition = {
   inputSchema: z.object({
     chromePath: z.string().optional().describe('Path to Chrome executable. Auto-detected if not specified.'),
     headless: z.boolean().optional().describe('Run in headless mode. Default: false'),
-    port: z.number().optional().describe('Debug port. Default: 9222'),
+    port: z.number().optional().describe('Debug port. Default: 0 (random available port)'),
     userDataDir: z.string().optional().describe('User data directory. Uses temp dir if not specified.'),
     args: z.array(z.string()).optional().describe('Additional Chrome arguments'),
   }),

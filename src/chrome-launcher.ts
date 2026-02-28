@@ -92,7 +92,7 @@ export async function launchChrome(options: LaunchOptions = {}): Promise<LaunchR
     throw new Error('Chrome executable not found. Please specify chromePath.');
   }
 
-  const port = options.port ?? 9222;
+  const port = options.port ?? 0;
   const headless = options.headless ?? false;
 
   let userDataDir = options.userDataDir;
