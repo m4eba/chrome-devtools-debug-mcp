@@ -124,7 +124,7 @@ export async function launchChrome(options: LaunchOptions = {}): Promise<LaunchR
   // Wait for the WebSocket endpoint
   const wsEndpointPromise = new Promise<string>((resolve, reject) => {
     const timeout = setTimeout(() => {
-      reject(new Error('Timeout waiting for Chrome DevTools WebSocket endpoint'));
+      reject(new Error(`Timeout waiting for Chrome DevTools WebSocket endpoint. Port ${port} is probably already in use.`));
     }, 30000);
 
     chromeProcess.stderr?.on('data', (data: Buffer) => {

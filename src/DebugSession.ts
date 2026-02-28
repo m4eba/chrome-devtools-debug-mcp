@@ -278,6 +278,7 @@ export class DebugSession extends EventEmitter {
 
     // Connection events
     this.client.on('close', () => {
+      this.launchResult = null;
       this.emit('disconnected');
     });
   }
@@ -354,6 +355,14 @@ export class DebugSession extends EventEmitter {
 
   isConnected(): boolean {
     return this.client.isConnected();
+  }
+
+  getConnectionStatus(): { wsEndpoint: string | null; port: number | null; httpEndpoint: string | null } {
+    return {
+      wsEndpoint: this.launchResult?.wsEndpoint ?? null,
+      port: this.launchResult?.port ?? null,
+      httpEndpoint: this.httpEndpoint,
+    };
   }
 
   private reset(): void {

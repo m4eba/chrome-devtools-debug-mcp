@@ -6,7 +6,7 @@ import type { DebugSession } from '../DebugSession.js';
 
 export const startChrome: ToolDefinition = {
   name: 'start_chrome',
-  description: 'Launch Chrome browser with debugging enabled. Returns WebSocket endpoint URL.',
+  description: 'Launch Chrome browser with debugging enabled. Returns WebSocket endpoint URL. If already connected, returns existing connection info.',
   inputSchema: z.object({
     chromePath: z.string().optional().describe('Path to Chrome executable. Auto-detected if not specified.'),
     headless: z.boolean().optional().describe('Run in headless mode. Default: false'),
@@ -17,6 +17,17 @@ export const startChrome: ToolDefinition = {
   handler: async (session, params) => {
     const p = params as z.infer<typeof startChrome.inputSchema>;
     try {
+      // If already connected, return existing connection info
+      if (session.isConnected()) {
+        const status = session.getConnectionStatus();
+        return success(formatObject({
+          status: 'already_connected',
+          wsEndpoint: status.wsEndpoint,
+          port: status.port,
+          message: 'Already connected to Chrome. Use stop_chrome to disconnect first if you want a new instance.',
+        }));
+      }
+
       const result = await session.launch({
         chromePath: p.chromePath,
         headless: p.headless,
