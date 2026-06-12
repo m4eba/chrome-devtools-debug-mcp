@@ -7,6 +7,11 @@
   <h1>Service Worker Test</h1>
   <div id="status">registering...</div>
   <script>
+    // Record the SW's reported fetch outcome (see sw.js 'fetch-now' handler).
+    window.__swOutcome = null;
+    navigator.serviceWorker.addEventListener('message', (e) => {
+      if (e.data && e.data.swOutcome) window.__swOutcome = e.data.swOutcome;
+    });
     window.__swReady = navigator.serviceWorker.register('/sw.js', { scope: '/' })
       .then((reg) => reg.update().then(() => reg))
       .then(async (reg) => {

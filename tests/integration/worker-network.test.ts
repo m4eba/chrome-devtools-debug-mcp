@@ -84,7 +84,14 @@ describe.skipIf(!CHROME_AVAILABLE)('Worker Network Capture (multi-session)', () 
     }, 15000).catch(() => null);
 
     if (!found) {
+      // Did the SW actually receive the message and run its fetch? This tells
+      // "SW never fetched" apart from "SW fetched but capture missed it".
+      const outcome = await session
+        .evaluate('window.__swOutcome', { returnByValue: true })
+        .then((r) => (r.result as { value?: unknown }).value)
+        .catch(() => '<<eval failed>>');
       const diag = {
+        swReportedFetchOutcome: outcome,
         lookingForSwTargetId: swSession!.targetId,
         pageTargetId: session.getCurrentTargetId(),
         attachedNow: session.getAttachedSessions().map((s) => ({ type: s.type, targetId: s.targetId, url: s.url })),

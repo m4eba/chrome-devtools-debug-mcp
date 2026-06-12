@@ -14,8 +14,20 @@ self.addEventListener('message', (event) => {
   } else if (event.data === 'fetch-now') {
     // Make an outgoing request straight from the SW so it is captured on the
     // SW target — independent of whether the SW controls any page (page
-    // control / fetch interception is racy in headless CI).
-    event.waitUntil(fetch('/api/data', { cache: 'no-store' }));
+    // control / fetch interception is racy in headless CI). Report the outcome
+    // back to all windows so the test can tell "SW never fetched" apart from
+    // "SW fetched but the request wasn't captured on the SW target".
+    event.waitUntil((async () => {
+      let outcome;
+      try {
+        const r = await fetch('/api/data', { cache: 'no-store' });
+        outcome = 'status-' + r.status;
+      } catch (e) {
+        outcome = 'error-' + (e && e.message);
+      }
+      const clients = await self.clients.matchAll({ includeUncontrolled: true, type: 'window' });
+      for (const c of clients) c.postMessage({ swOutcome: outcome });
+    })());
   }
 });
 
