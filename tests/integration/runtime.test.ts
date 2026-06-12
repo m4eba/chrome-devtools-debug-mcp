@@ -134,3 +134,41 @@ describe.skipIf(!CHROME_AVAILABLE)('Runtime Integration', () => {
     }
   });
 });
+
+// Runtime is auto-enabled on connect, so console capture must work without any
+// explicit enableRuntime()/debugger_enable call. This guards that contract.
+describe.skipIf(!CHROME_AVAILABLE)('Runtime auto-enable on connect', () => {
+  let session: DebugSession;
+  let testServer: TestServer;
+
+  beforeAll(async () => {
+    testServer = await createTestServer();
+  });
+
+  afterAll(async () => {
+    await testServer.close();
+  });
+
+  beforeEach(async () => {
+    session = new DebugSession({ timeout: 30000 });
+    // Intentionally NO enableRuntime() — launch() should auto-enable it.
+    await session.launch({ headless: true, port: 0 });
+  });
+
+  afterEach(async () => {
+    await session.kill();
+  });
+
+  it('captures console messages without a manual enable', async () => {
+    await session.navigate(testServer.url);
+    await new Promise((r) => setTimeout(r, 500));
+
+    session.consoleState.clear();
+
+    await session.evaluate('console.log("auto enabled")');
+    await new Promise((r) => setTimeout(r, 200));
+
+    const messages = session.consoleState.getMessages();
+    expect(messages.some((m) => m.text === 'auto enabled')).toBe(true);
+  });
+});

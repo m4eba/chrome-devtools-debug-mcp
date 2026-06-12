@@ -63,6 +63,10 @@ export class DebugSession extends EventEmitter {
   // Whether the user has called enableNetwork(); used to fan-out to new sessions.
   private networkEnabledGlobal = false;
 
+  // Whether Runtime (console + exceptions) capture is on; used to fan-out to
+  // new sessions. Auto-enabled on connect so console works without a tool call.
+  private runtimeEnabledGlobal = false;
+
   // State managers
   readonly debugState: DebugState;
   readonly scriptRegistry: ScriptRegistry;
@@ -371,6 +375,7 @@ export class DebugSession extends EventEmitter {
         title: pageTarget.title,
       });
       await this.setupAutoAttachOnRoot();
+      await this.autoEnableRuntime();
     } else {
       throw new Error('No page target found');
     }
@@ -394,6 +399,7 @@ export class DebugSession extends EventEmitter {
     } catch (e) {
       debug('Target.getTargetInfo failed after raw connect: %s', e instanceof Error ? e.message : String(e));
     }
+    await this.autoEnableRuntime();
   }
 
   async connectToTarget(httpUrl: string, targetId?: string): Promise<TargetInfo> {
@@ -424,6 +430,7 @@ export class DebugSession extends EventEmitter {
       title: target.title,
     });
     await this.setupAutoAttachOnRoot();
+    await this.autoEnableRuntime();
 
     return {
       targetId: target.id,
@@ -475,6 +482,7 @@ export class DebugSession extends EventEmitter {
     this.sessions.clear();
     this.sessionsByCdpId.clear();
     this.networkEnabledGlobal = false;
+    this.runtimeEnabledGlobal = false;
     this.httpEndpoint = null;
   }
 
@@ -489,6 +497,16 @@ export class DebugSession extends EventEmitter {
       title: info.title,
     };
     this.sessions.set(info.targetId, session);
+  }
+
+  // Enable Runtime on connect so console + exceptions are captured without the
+  // agent having to call debugger_enable first. Failures are non-fatal.
+  private async autoEnableRuntime(): Promise<void> {
+    try {
+      await this.enableRuntime();
+    } catch (e) {
+      debug('auto Runtime.enable on connect failed: %s', e instanceof Error ? e.message : String(e));
+    }
   }
 
   private async setupAutoAttachOnRoot(): Promise<void> {
@@ -547,6 +565,16 @@ export class DebugSession extends EventEmitter {
         await this.client.send('Network.enable', undefined, params.sessionId);
       } catch (e) {
         debug('Network.enable on child %s failed: %s', session.targetId, e instanceof Error ? e.message : String(e));
+      }
+    }
+
+    // Honor global Runtime capture (console + exceptions) for new sessions, so
+    // worker/SW console flows in without re-enabling per target.
+    if (this.runtimeEnabledGlobal) {
+      try {
+        await this.client.send('Runtime.enable', undefined, params.sessionId);
+      } catch (e) {
+        debug('Runtime.enable on child %s failed: %s', session.targetId, e instanceof Error ? e.message : String(e));
       }
     }
 
@@ -679,6 +707,7 @@ export class DebugSession extends EventEmitter {
     this.sessions.clear();
     this.sessionsByCdpId.clear();
     this.networkEnabledGlobal = false;
+    this.runtimeEnabledGlobal = false;
 
     // Connect to new target
     await this.client.connect(target.webSocketDebuggerUrl);
@@ -690,6 +719,7 @@ export class DebugSession extends EventEmitter {
       title: target.title,
     });
     await this.setupAutoAttachOnRoot();
+    await this.autoEnableRuntime();
 
     return {
       targetId: target.id,
@@ -881,12 +911,35 @@ export class DebugSession extends EventEmitter {
 
   // Runtime domain
   async enableRuntime(): Promise<void> {
-    await this.client.send('Runtime.enable');
+    this.runtimeEnabledGlobal = true;
     this.consoleState.setEnabled(true);
+    const sessions = Array.from(this.sessions.values());
+    if (sessions.length === 0) {
+      // Root not yet registered (e.g. raw connect path). Send unsessioned.
+      await this.client.send('Runtime.enable');
+      return;
+    }
+    const results = await Promise.allSettled(
+      sessions.map((s) => this.client.send('Runtime.enable', undefined, s.sessionId ?? undefined))
+    );
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i];
+      if (r.status === 'rejected') {
+        debug('Runtime.enable failed on target %s: %s', sessions[i].targetId, r.reason instanceof Error ? r.reason.message : String(r.reason));
+      }
+    }
   }
 
   async disableRuntime(): Promise<void> {
-    await this.client.send('Runtime.disable');
+    this.runtimeEnabledGlobal = false;
+    const sessions = Array.from(this.sessions.values());
+    if (sessions.length === 0) {
+      await this.client.send('Runtime.disable');
+    } else {
+      await Promise.allSettled(
+        sessions.map((s) => this.client.send('Runtime.disable', undefined, s.sessionId ?? undefined))
+      );
+    }
     this.consoleState.setEnabled(false);
   }
 
