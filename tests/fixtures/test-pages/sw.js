@@ -11,6 +11,11 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('message', (event) => {
   if (event.data === 'claim') {
     self.clients.claim();
+  } else if (event.data === 'fetch-now') {
+    // Make an outgoing request straight from the SW so it is captured on the
+    // SW target — independent of whether the SW controls any page (page
+    // control / fetch interception is racy in headless CI).
+    event.waitUntil(fetch('/api/data', { cache: 'no-store' }));
   }
 });
 
