@@ -43,16 +43,17 @@ describe.skipIf(!CHROME_AVAILABLE)('Worker Network Capture (multi-session)', () 
     await session.navigate(testServer.url + '/sw-page.html');
 
     // Wait for the SW to register and become active. The page sets
-    // status=sw-ready once controllerchange fires.
+    // status=sw-ready once controllerchange fires. Timeouts are generous because
+    // the SW lifecycle is markedly slower on CI runners than locally.
     await session.enableRuntime();
     await waitFor(async () => {
       const r = await session.evaluate("document.getElementById('status')?.textContent === 'sw-ready'", { returnByValue: true });
       return (r.result as { value?: boolean }).value === true;
-    }, 8000);
+    }, 15000);
 
     // Give the SW some time to be discovered + attached. setDiscoverTargets is
     // racy with the SW lifecycle.
-    await waitFor(() => session.getAttachedSessions().some((s) => s.type === 'service_worker'), 3000).catch(() => undefined);
+    await waitFor(() => session.getAttachedSessions().some((s) => s.type === 'service_worker'), 10000).catch(() => undefined);
 
     const browserTargets = await session.listTargets();
     const attached = session.getAttachedSessions();
@@ -68,12 +69,13 @@ describe.skipIf(!CHROME_AVAILABLE)('Worker Network Capture (multi-session)', () 
     await session.evaluate("fetch('/api/sw-data').then(r => r.text())", { awaitPromise: true });
 
     // Give the SW a moment to issue its outgoing fetch and the Network events
-    // to land.
+    // to land. Generous timeout: on CI the SW's Network domain can take a while
+    // to start reporting after attach.
     await waitFor(() => {
       const requests = session.networkState.getAllRequests();
       const fromSw = requests.filter((r) => r.targetId === swSession!.targetId);
       return fromSw.length > 0 ? fromSw : null;
-    }, 5000);
+    }, 15000);
 
     const requests = session.networkState.getAllRequests();
     const pageRequests = requests.filter((r) => r.targetId === session.getCurrentTargetId());
@@ -94,8 +96,8 @@ describe.skipIf(!CHROME_AVAILABLE)('Worker Network Capture (multi-session)', () 
     await waitFor(async () => {
       const r = await session.evaluate("document.getElementById('status')?.textContent === 'sw-ready'", { returnByValue: true });
       return (r.result as { value?: boolean }).value === true;
-    }, 8000);
-    await waitFor(() => session.getAttachedSessions().some((s) => s.type === 'service_worker'), 3000);
+    }, 15000);
+    await waitFor(() => session.getAttachedSessions().some((s) => s.type === 'service_worker'), 10000);
 
     const sessions = session.getAttachedSessions();
     expect(sessions.some((s) => s.type === 'service_worker')).toBe(true);
