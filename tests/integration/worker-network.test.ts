@@ -71,10 +71,23 @@ describe.skipIf(!CHROME_AVAILABLE)('Worker Network Capture (multi-session)', () 
     // fetch bypasses the SW and 404s). A message reaches the active SW
     // regardless of control, and its outgoing fetch must land on the SW target.
     session.networkState.clear();
-    await session.evaluate(
-      "navigator.serviceWorker.getRegistration().then((reg) => { if (reg && reg.active) reg.active.postMessage('fetch-now'); })",
-      { awaitPromise: true }
+    const trigger = await session.evaluate(
+      `(async () => {
+        const reg = await navigator.serviceWorker.getRegistration();
+        const state = {
+          hasReg: !!reg,
+          hasActive: !!(reg && reg.active),
+          activeState: reg && reg.active ? reg.active.state : null,
+          installing: !!(reg && reg.installing),
+          waiting: !!(reg && reg.waiting),
+          controller: !!navigator.serviceWorker.controller,
+        };
+        if (reg && reg.active) reg.active.postMessage('fetch-now');
+        return JSON.stringify(state);
+      })()`,
+      { returnByValue: true, awaitPromise: true }
     );
+    const pageTriggerState = (trigger.result as { value?: unknown }).value;
 
     const found = await waitFor(() => {
       const fromSw = session.networkState
@@ -91,6 +104,7 @@ describe.skipIf(!CHROME_AVAILABLE)('Worker Network Capture (multi-session)', () 
         .then((r) => (r.result as { value?: unknown }).value)
         .catch(() => '<<eval failed>>');
       const diag = {
+        pageTriggerState,
         swReportedFetchOutcome: outcome,
         lookingForSwTargetId: swSession!.targetId,
         pageTargetId: session.getCurrentTargetId(),
