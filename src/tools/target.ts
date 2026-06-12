@@ -74,8 +74,33 @@ export const closeTarget: ToolDefinition = {
   },
 };
 
+export const listAttachedSessions: ToolDefinition = {
+  name: 'list_attached_sessions',
+  description:
+    'List every target this DebugSession is currently attached to (root page + auto-attached workers, service workers, iframes). Use the targetId in network tools to scope results.',
+  inputSchema: z.object({}),
+  handler: async (session) => {
+    try {
+      const sessions = session.getAttachedSessions();
+      return success(formatObject({
+        count: sessions.length,
+        sessions: sessions.map((s) => ({
+          targetId: s.targetId,
+          type: s.type,
+          url: s.url,
+          title: s.title,
+          isRoot: s.sessionId === null,
+        })),
+      }));
+    } catch (e) {
+      return error(e instanceof Error ? e.message : String(e));
+    }
+  },
+};
+
 export const targetTools: ToolDefinition[] = [
   createTarget,
   switchTarget,
   closeTarget,
+  listAttachedSessions,
 ];

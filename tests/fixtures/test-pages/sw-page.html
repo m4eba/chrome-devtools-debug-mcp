@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>SW Test</title>
+</head>
+<body>
+  <h1>Service Worker Test</h1>
+  <div id="status">registering...</div>
+  <script>
+    window.__swReady = navigator.serviceWorker.register('/sw.js', { scope: '/' })
+      .then((reg) => reg.update().then(() => reg))
+      .then(async (reg) => {
+        // Wait until a controller is in charge so SW.fetch handles requests.
+        if (!navigator.serviceWorker.controller) {
+          await new Promise((resolve) => {
+            navigator.serviceWorker.addEventListener('controllerchange', () => resolve(null), { once: true });
+            // Force takeover for first-page-load case.
+            if (reg.active) reg.active.postMessage('claim');
+          });
+        }
+        document.getElementById('status').textContent = 'sw-ready';
+        return reg;
+      });
+  </script>
+</body>
+</html>

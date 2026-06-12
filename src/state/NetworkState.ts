@@ -1,7 +1,8 @@
-import type { NetworkRequest, RequestData, ResponseData, ResourceType } from '../utils/types.js';
+import type { RequestData, ResponseData, ResourceType } from '../utils/types.js';
 
 export interface CollectedRequest {
   requestId: string;
+  targetId: string;
   url: string;
   method: string;
   resourceType: ResourceType;
@@ -40,6 +41,7 @@ export class NetworkState {
   // Request lifecycle
   onRequestWillBeSent(params: {
     requestId: string;
+    targetId: string;
     loaderId: string;
     documentURL: string;
     request: RequestData;
@@ -55,8 +57,9 @@ export class NetworkState {
       }
     }
 
-    this.requests.set(params.requestId, {
+    this.requests.set(this.key(params.requestId, params.targetId), {
       requestId: params.requestId,
+      targetId: params.targetId,
       url: params.request.url,
       method: params.request.method,
       resourceType: params.type,
@@ -67,11 +70,12 @@ export class NetworkState {
 
   onResponseReceived(params: {
     requestId: string;
+    targetId: string;
     timestamp: number;
     response: ResponseData;
     type: ResourceType;
   }): void {
-    const req = this.requests.get(params.requestId);
+    const req = this.requests.get(this.key(params.requestId, params.targetId));
     if (req) {
       req.status = params.response.status;
       req.statusText = params.response.statusText;
@@ -82,10 +86,11 @@ export class NetworkState {
 
   onLoadingFinished(params: {
     requestId: string;
+    targetId: string;
     timestamp: number;
     encodedDataLength: number;
   }): void {
-    const req = this.requests.get(params.requestId);
+    const req = this.requests.get(this.key(params.requestId, params.targetId));
     if (req) {
       req.endTime = params.timestamp;
       req.duration = params.timestamp - req.startTime;
@@ -95,11 +100,12 @@ export class NetworkState {
 
   onLoadingFailed(params: {
     requestId: string;
+    targetId: string;
     timestamp: number;
     errorText: string;
     canceled?: boolean;
   }): void {
-    const req = this.requests.get(params.requestId);
+    const req = this.requests.get(this.key(params.requestId, params.targetId));
     if (req) {
       req.endTime = params.timestamp;
       req.duration = params.timestamp - req.startTime;
@@ -109,9 +115,12 @@ export class NetworkState {
     }
   }
 
-  // Store response body
-  setResponseBody(requestId: string, body: string, base64Encoded: boolean): void {
-    const req = this.requests.get(requestId);
+  // Store response body. targetId is optional: if omitted, we fall back to
+  // looking up by requestId (used when the caller only has a requestId).
+  setResponseBody(requestId: string, body: string, base64Encoded: boolean, targetId?: string): void {
+    const req = targetId
+      ? this.requests.get(this.key(requestId, targetId))
+      : this.findByRequestId(requestId);
     if (req) {
       req.responseBody = body;
       req.responseBodyBase64 = base64Encoded;
@@ -119,29 +128,33 @@ export class NetworkState {
   }
 
   // Query requests
-  getRequest(requestId: string): CollectedRequest | undefined {
-    return this.requests.get(requestId);
+  getRequest(requestId: string, targetId?: string): CollectedRequest | undefined {
+    if (targetId) {
+      return this.requests.get(this.key(requestId, targetId));
+    }
+    return this.findByRequestId(requestId);
   }
 
-  getAllRequests(): CollectedRequest[] {
-    return Array.from(this.requests.values());
+  getAllRequests(targetId?: string): CollectedRequest[] {
+    const all = Array.from(this.requests.values());
+    return targetId ? all.filter((r) => r.targetId === targetId) : all;
   }
 
-  getRequestsByUrl(urlPattern: string): CollectedRequest[] {
+  getRequestsByUrl(urlPattern: string, targetId?: string): CollectedRequest[] {
     const regex = this.patternToRegex(urlPattern);
-    return this.getAllRequests().filter((r) => regex.test(r.url));
+    return this.getAllRequests(targetId).filter((r) => regex.test(r.url));
   }
 
-  getRequestsByType(type: ResourceType): CollectedRequest[] {
-    return this.getAllRequests().filter((r) => r.resourceType === type);
+  getRequestsByType(type: ResourceType, targetId?: string): CollectedRequest[] {
+    return this.getAllRequests(targetId).filter((r) => r.resourceType === type);
   }
 
-  getFailedRequests(): CollectedRequest[] {
-    return this.getAllRequests().filter((r) => r.failed);
+  getFailedRequests(targetId?: string): CollectedRequest[] {
+    return this.getAllRequests(targetId).filter((r) => r.failed);
   }
 
-  getPendingRequests(): CollectedRequest[] {
-    return this.getAllRequests().filter((r) => !r.endTime && !r.failed);
+  getPendingRequests(targetId?: string): CollectedRequest[] {
+    return this.getAllRequests(targetId).filter((r) => !r.endTime && !r.failed);
   }
 
   private patternToRegex(pattern: string): RegExp {
@@ -155,12 +168,21 @@ export class NetworkState {
     return new RegExp(escaped);
   }
 
-  clear(): void {
-    this.requests.clear();
+  clear(targetId?: string): void {
+    if (!targetId) {
+      this.requests.clear();
+      return;
+    }
+    for (const [k, v] of this.requests) {
+      if (v.targetId === targetId) this.requests.delete(k);
+    }
   }
 
-  getCount(): number {
-    return this.requests.size;
+  getCount(targetId?: string): number {
+    if (!targetId) return this.requests.size;
+    let n = 0;
+    for (const v of this.requests.values()) if (v.targetId === targetId) n++;
+    return n;
   }
 
   setMaxRequests(max: number): void {
@@ -168,7 +190,7 @@ export class NetworkState {
   }
 
   // Summary for debugging
-  getSummary(): {
+  getSummary(targetId?: string): {
     total: number;
     completed: number;
     failed: number;
@@ -177,8 +199,11 @@ export class NetworkState {
     let completed = 0;
     let failed = 0;
     let pending = 0;
+    let total = 0;
 
     for (const req of this.requests.values()) {
+      if (targetId && req.targetId !== targetId) continue;
+      total++;
       if (req.failed) {
         failed++;
       } else if (req.endTime) {
@@ -188,11 +213,17 @@ export class NetworkState {
       }
     }
 
-    return {
-      total: this.requests.size,
-      completed,
-      failed,
-      pending,
-    };
+    return { total, completed, failed, pending };
+  }
+
+  private key(requestId: string, targetId: string): string {
+    return `${targetId}:${requestId}`;
+  }
+
+  private findByRequestId(requestId: string): CollectedRequest | undefined {
+    for (const req of this.requests.values()) {
+      if (req.requestId === requestId) return req;
+    }
+    return undefined;
   }
 }

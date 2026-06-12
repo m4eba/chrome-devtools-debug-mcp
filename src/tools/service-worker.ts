@@ -32,7 +32,7 @@ export const serviceWorkerDisable: ToolDefinition = {
 
 export const listServiceWorkers: ToolDefinition = {
   name: 'list_service_workers',
-  description: 'List all registered service workers.',
+  description: 'List all registered service workers. Includes the CDP targetId when known so it can be cross-referenced with list_attached_sessions and list_requests.',
   inputSchema: z.object({}),
   handler: async (session) => {
     try {
@@ -51,6 +51,7 @@ export const listServiceWorkers: ToolDefinition = {
           scriptURL: v.scriptURL,
           runningStatus: v.runningStatus,
           status: v.status,
+          targetId: v.targetId,
         })),
       }));
     } catch (e) {

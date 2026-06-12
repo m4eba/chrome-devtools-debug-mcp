@@ -15,6 +15,7 @@ interface PendingRequest {
   resolve: (result: unknown) => void;
   reject: (error: Error) => void;
   method: string;
+  sessionId: string | null;
   timeout: NodeJS.Timeout;
 }
 
@@ -22,11 +23,17 @@ export interface CDPClientOptions {
   timeout?: number;
 }
 
+// Top-level CDP message in flat mode (`Target.setAutoAttach({flatten:true})`).
+// Both responses and events may carry a top-level `sessionId` when they
+// originate from an attached child session.
+interface FlatCDPMessage extends CDPMessage {
+  sessionId?: string;
+}
+
 export class CDPClient extends EventEmitter {
   private ws: WebSocket | null = null;
   private requestId = 0;
   private pendingRequests = new Map<number, PendingRequest>();
-  private sessionId: string | null = null;
   private timeout: number;
   private connected = false;
 
@@ -90,15 +97,16 @@ export class CDPClient extends EventEmitter {
     return this.connected;
   }
 
-  setSessionId(sessionId: string | null): void {
-    this.sessionId = sessionId;
-  }
-
-  getSessionId(): string | null {
-    return this.sessionId;
-  }
-
-  async send<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {
+  /**
+   * Send a CDP command. If `sessionId` is provided the message is routed to
+   * that attached child session (flat mode). Otherwise it is sent on the root
+   * connection.
+   */
+  async send<T = unknown>(
+    method: string,
+    params?: Record<string, unknown>,
+    sessionId?: string | null
+  ): Promise<T> {
     if (!this.ws || !this.connected) {
       throw new Error('Not connected');
     }
@@ -108,11 +116,11 @@ export class CDPClient extends EventEmitter {
     if (params) {
       request.params = params;
     }
-    if (this.sessionId) {
-      request.sessionId = this.sessionId;
+    if (sessionId) {
+      request.sessionId = sessionId;
     }
 
-    debug('-> %s %d %o', method, id, params);
+    debug('-> %s %d (sid=%s) %o', method, id, sessionId ?? 'root', params);
 
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -120,28 +128,48 @@ export class CDPClient extends EventEmitter {
         reject(new Error(`Request timeout: ${method} (${id})`));
       }, this.timeout);
 
-      this.pendingRequests.set(id, { resolve: resolve as (result: unknown) => void, reject, method, timeout });
+      this.pendingRequests.set(id, {
+        resolve: resolve as (result: unknown) => void,
+        reject,
+        method,
+        sessionId: sessionId ?? null,
+        timeout,
+      });
       this.ws!.send(JSON.stringify(request));
     });
   }
 
+  /**
+   * Reject all pending requests that belong to a specific session. Used when
+   * a child session detaches.
+   */
+  rejectPendingForSession(sessionId: string, error: Error): void {
+    for (const [id, pending] of this.pendingRequests) {
+      if (pending.sessionId === sessionId) {
+        clearTimeout(pending.timeout);
+        this.pendingRequests.delete(id);
+        pending.reject(error);
+      }
+    }
+  }
+
   private handleMessage(data: string): void {
-    let message: CDPMessage;
+    let message: FlatCDPMessage;
     try {
-      message = JSON.parse(data) as CDPMessage;
+      message = JSON.parse(data) as FlatCDPMessage;
     } catch {
       debug('Failed to parse message: %s', data);
       return;
     }
 
     if (message.id !== undefined) {
-      this.handleResponse(message as CDPResponse);
+      this.handleResponse(message as CDPResponse & { sessionId?: string });
     } else if (message.method) {
-      this.handleEvent(message as CDPEvent);
+      this.handleEvent(message as CDPEvent & { sessionId?: string });
     }
   }
 
-  private handleResponse(response: CDPResponse): void {
+  private handleResponse(response: CDPResponse & { sessionId?: string }): void {
     const pending = this.pendingRequests.get(response.id);
     if (!pending) {
       debug('Received response for unknown request: %d', response.id);
@@ -160,14 +188,17 @@ export class CDPClient extends EventEmitter {
     }
   }
 
-  private handleEvent(event: CDPEvent): void {
-    debug('<- EVENT %s %o', event.method, event.params);
+  private handleEvent(event: CDPEvent & { sessionId?: string }): void {
+    const sessionId = event.sessionId ?? null;
+    debug('<- EVENT %s (sid=%s) %o', event.method, sessionId ?? 'root', event.params);
     this.emit('event', event);
-    this.emit(event.method, event.params);
+    // Listeners receive (params, sessionId). Legacy listeners that ignore the
+    // second arg keep working.
+    this.emit(event.method, event.params, sessionId);
   }
 
   private rejectAllPending(error: Error): void {
-    for (const [id, pending] of this.pendingRequests) {
+    for (const [, pending] of this.pendingRequests) {
       clearTimeout(pending.timeout);
       pending.reject(error);
     }

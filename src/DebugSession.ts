@@ -39,12 +39,29 @@ export interface BreakpointAwareResult<T> {
   callFrames?: CallFrame[];
 }
 
+export interface AttachedSession {
+  // CDP sessionId, or null for the root connection.
+  sessionId: string | null;
+  targetId: string;
+  type: string;
+  url: string;
+  title?: string;
+}
+
 export class DebugSession extends EventEmitter {
   private client: CDPClient;
   private launchResult: LaunchResult | null = null;
   private targetId: string | null = null;
-  private sessionId: string | null = null;
   private httpEndpoint: string | null = null;
+
+  // Multi-session tracking: every target we are attached to (root + auto-attached
+  // children like workers, service workers, iframes). Keyed by targetId.
+  private sessions = new Map<string, AttachedSession>();
+  // Reverse index: real CDP sessionId -> AttachedSession (excludes root).
+  private sessionsByCdpId = new Map<string, AttachedSession>();
+
+  // Whether the user has called enableNetwork(); used to fan-out to new sessions.
+  private networkEnabledGlobal = false;
 
   // State managers
   readonly debugState: DebugState;
@@ -200,25 +217,79 @@ export class DebugSession extends EventEmitter {
       this.emit('exceptionThrown', exc);
     });
 
-    // Network events
-    this.client.on('Network.requestWillBeSent', (params: unknown) => {
-      this.networkState.onRequestWillBeSent(params as Parameters<typeof this.networkState.onRequestWillBeSent>[0]);
-      this.emit('requestWillBeSent', params);
+    // Network events. Tag each event with the originating targetId so
+    // multi-session (page + workers) traffic stays distinguishable.
+    this.client.on('Network.requestWillBeSent', (params: unknown, sessionId?: string | null) => {
+      const targetId = this.targetIdForSession(sessionId ?? null);
+      if (!targetId) return;
+      this.networkState.onRequestWillBeSent({
+        ...(params as Omit<Parameters<typeof this.networkState.onRequestWillBeSent>[0], 'targetId'>),
+        targetId,
+      });
+      this.emit('requestWillBeSent', params, targetId);
     });
 
-    this.client.on('Network.responseReceived', (params: unknown) => {
-      this.networkState.onResponseReceived(params as Parameters<typeof this.networkState.onResponseReceived>[0]);
-      this.emit('responseReceived', params);
+    this.client.on('Network.responseReceived', (params: unknown, sessionId?: string | null) => {
+      const targetId = this.targetIdForSession(sessionId ?? null);
+      if (!targetId) return;
+      this.networkState.onResponseReceived({
+        ...(params as Omit<Parameters<typeof this.networkState.onResponseReceived>[0], 'targetId'>),
+        targetId,
+      });
+      this.emit('responseReceived', params, targetId);
     });
 
-    this.client.on('Network.loadingFinished', (params: unknown) => {
-      this.networkState.onLoadingFinished(params as Parameters<typeof this.networkState.onLoadingFinished>[0]);
-      this.emit('loadingFinished', params);
+    this.client.on('Network.loadingFinished', (params: unknown, sessionId?: string | null) => {
+      const targetId = this.targetIdForSession(sessionId ?? null);
+      if (!targetId) return;
+      this.networkState.onLoadingFinished({
+        ...(params as Omit<Parameters<typeof this.networkState.onLoadingFinished>[0], 'targetId'>),
+        targetId,
+      });
+      this.emit('loadingFinished', params, targetId);
     });
 
-    this.client.on('Network.loadingFailed', (params: unknown) => {
-      this.networkState.onLoadingFailed(params as Parameters<typeof this.networkState.onLoadingFailed>[0]);
-      this.emit('loadingFailed', params);
+    this.client.on('Network.loadingFailed', (params: unknown, sessionId?: string | null) => {
+      const targetId = this.targetIdForSession(sessionId ?? null);
+      if (!targetId) return;
+      this.networkState.onLoadingFailed({
+        ...(params as Omit<Parameters<typeof this.networkState.onLoadingFailed>[0], 'targetId'>),
+        targetId,
+      });
+      this.emit('loadingFailed', params, targetId);
+    });
+
+    // Target events: track auto-attached child sessions (workers, iframes, SWs).
+    this.client.on('Target.attachedToTarget', (params: unknown) => {
+      this.onAttachedToTarget(params as {
+        sessionId: string;
+        targetInfo: { targetId: string; type: string; url: string; title?: string };
+        waitingForDebugger: boolean;
+      }).catch((err) => {
+        debug('onAttachedToTarget failed: %s', err instanceof Error ? err.message : String(err));
+      });
+    });
+
+    this.client.on('Target.detachedFromTarget', (params: unknown) => {
+      const p = params as { sessionId: string; targetId?: string };
+      this.onDetachedFromTarget(p.sessionId);
+    });
+
+    // setAutoAttach only covers "related" targets (iframes, dedicated/shared
+    // workers, and some SW cases). Service workers in particular are not
+    // children of a page in CDP's hierarchy, so we also listen on
+    // Target.targetCreated (paired with setDiscoverTargets) and attach to
+    // worker-class targets manually.
+    this.client.on('Target.targetCreated', (params: unknown) => {
+      const info = (params as { targetInfo: { targetId: string; type: string; url: string; title?: string } }).targetInfo;
+      if (!info) return;
+      if (!isAttachableWorkerType(info.type)) return;
+      if (this.sessions.has(info.targetId)) return;
+      this.client
+        .send('Target.attachToTarget', { targetId: info.targetId, flatten: true })
+        .catch((err) => {
+          debug('Target.attachToTarget(%s) failed: %s', info.targetId, err instanceof Error ? err.message : String(err));
+        });
     });
 
     // Fetch events
@@ -293,6 +364,13 @@ export class DebugSession extends EventEmitter {
     if (pageTarget?.webSocketDebuggerUrl) {
       await this.client.connect(pageTarget.webSocketDebuggerUrl);
       this.targetId = pageTarget.id;
+      this.registerRootSession({
+        targetId: pageTarget.id,
+        type: pageTarget.type,
+        url: pageTarget.url,
+        title: pageTarget.title,
+      });
+      await this.setupAutoAttachOnRoot();
     } else {
       throw new Error('No page target found');
     }
@@ -305,6 +383,17 @@ export class DebugSession extends EventEmitter {
 
   async connect(wsUrl: string): Promise<void> {
     await this.client.connect(wsUrl);
+    // We don't know the targetId of the connection; ask CDP.
+    try {
+      const info = await this.client.send<{ targetInfo: { targetId: string; type: string; url: string; title?: string } }>(
+        'Target.getTargetInfo'
+      );
+      this.targetId = info.targetInfo.targetId;
+      this.registerRootSession(info.targetInfo);
+      await this.setupAutoAttachOnRoot();
+    } catch (e) {
+      debug('Target.getTargetInfo failed after raw connect: %s', e instanceof Error ? e.message : String(e));
+    }
   }
 
   async connectToTarget(httpUrl: string, targetId?: string): Promise<TargetInfo> {
@@ -328,6 +417,13 @@ export class DebugSession extends EventEmitter {
 
     await this.client.connect(target.webSocketDebuggerUrl);
     this.targetId = target.id;
+    this.registerRootSession({
+      targetId: target.id,
+      type: target.type,
+      url: target.url,
+      title: target.title,
+    });
+    await this.setupAutoAttachOnRoot();
 
     return {
       targetId: target.id,
@@ -376,8 +472,120 @@ export class DebugSession extends EventEmitter {
     this.serviceWorkerVersions.clear();
     this.documentNodeId = null;
     this.targetId = null;
-    this.sessionId = null;
+    this.sessions.clear();
+    this.sessionsByCdpId.clear();
+    this.networkEnabledGlobal = false;
     this.httpEndpoint = null;
+  }
+
+  // ── Session tracking ──────────────────────────────────────────────────────
+
+  private registerRootSession(info: { targetId: string; type: string; url: string; title?: string }): void {
+    const session: AttachedSession = {
+      sessionId: null,
+      targetId: info.targetId,
+      type: info.type,
+      url: info.url,
+      title: info.title,
+    };
+    this.sessions.set(info.targetId, session);
+  }
+
+  private async setupAutoAttachOnRoot(): Promise<void> {
+    // setAutoAttach covers related targets (iframes + dedicated/shared workers).
+    try {
+      await this.client.send('Target.setAutoAttach', {
+        autoAttach: true,
+        waitForDebuggerOnStart: false,
+        flatten: true,
+      });
+    } catch (e) {
+      debug('Target.setAutoAttach (root) failed: %s', e instanceof Error ? e.message : String(e));
+    }
+    // setDiscoverTargets lets us hear about service workers (and other
+    // top-level targets) so we can attach manually — see the
+    // Target.targetCreated handler in setupEventHandlers().
+    try {
+      await this.client.send('Target.setDiscoverTargets', { discover: true });
+    } catch (e) {
+      debug('Target.setDiscoverTargets failed: %s', e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  private async onAttachedToTarget(params: {
+    sessionId: string;
+    targetInfo: { targetId: string; type: string; url: string; title?: string };
+    waitingForDebugger: boolean;
+  }): Promise<void> {
+    const session: AttachedSession = {
+      sessionId: params.sessionId,
+      targetId: params.targetInfo.targetId,
+      type: params.targetInfo.type,
+      url: params.targetInfo.url,
+      title: params.targetInfo.title,
+    };
+    this.sessions.set(session.targetId, session);
+    this.sessionsByCdpId.set(params.sessionId, session);
+    debug('attached to %s target %s (sid=%s)', session.type, session.targetId, params.sessionId);
+    this.emit('sessionAttached', session);
+
+    // Cascade auto-attach so this session's own children (e.g. nested workers)
+    // also get attached.
+    try {
+      await this.client.send(
+        'Target.setAutoAttach',
+        { autoAttach: true, waitForDebuggerOnStart: false, flatten: true },
+        params.sessionId
+      );
+    } catch (e) {
+      debug('Target.setAutoAttach on child %s failed: %s', session.targetId, e instanceof Error ? e.message : String(e));
+    }
+
+    // Honor global Network capture for newly-attached sessions.
+    if (this.networkEnabledGlobal) {
+      try {
+        await this.client.send('Network.enable', undefined, params.sessionId);
+      } catch (e) {
+        debug('Network.enable on child %s failed: %s', session.targetId, e instanceof Error ? e.message : String(e));
+      }
+    }
+
+    // If the child was suspended waiting for debugger, let it run.
+    if (params.waitingForDebugger) {
+      try {
+        await this.client.send('Runtime.runIfWaitingForDebugger', undefined, params.sessionId);
+      } catch (e) {
+        debug('Runtime.runIfWaitingForDebugger on child %s failed: %s', session.targetId, e instanceof Error ? e.message : String(e));
+      }
+    }
+  }
+
+  private onDetachedFromTarget(sessionId: string): void {
+    const session = this.sessionsByCdpId.get(sessionId);
+    if (!session) return;
+    this.sessions.delete(session.targetId);
+    this.sessionsByCdpId.delete(sessionId);
+    this.client.rejectPendingForSession(sessionId, new Error(`Session detached: ${session.targetId}`));
+    debug('detached from target %s (sid=%s)', session.targetId, sessionId);
+    this.emit('sessionDetached', session);
+  }
+
+  /** Resolve a CDP sessionId (or null for root) to a targetId. */
+  private targetIdForSession(sessionId: string | null): string | null {
+    if (sessionId === null) return this.targetId;
+    return this.sessionsByCdpId.get(sessionId)?.targetId ?? null;
+  }
+
+  /** Resolve a targetId to its CDP sessionId. Returns null for the root, undefined if not attached. */
+  private sessionIdForTarget(targetId: string): string | null | undefined {
+    const s = this.sessions.get(targetId);
+    if (!s) return undefined;
+    return s.sessionId;
+  }
+
+  /** Snapshot of every target we are currently attached to. */
+  getAttachedSessions(): AttachedSession[] {
+    return Array.from(this.sessions.values());
   }
 
   // Target management
@@ -392,7 +600,7 @@ export class DebugSession extends EventEmitter {
       type: t.type as TargetInfo['type'],
       title: t.title,
       url: t.url,
-      attached: t.id === this.targetId,
+      attached: this.sessions.has(t.id),
       canAccessOpener: false,
     }));
   }
@@ -468,11 +676,20 @@ export class DebugSession extends EventEmitter {
     this.serviceWorkerRegistrations.clear();
     this.serviceWorkerVersions.clear();
     this.documentNodeId = null;
-    this.sessionId = null;
+    this.sessions.clear();
+    this.sessionsByCdpId.clear();
+    this.networkEnabledGlobal = false;
 
     // Connect to new target
     await this.client.connect(target.webSocketDebuggerUrl);
     this.targetId = target.id;
+    this.registerRootSession({
+      targetId: target.id,
+      type: target.type,
+      url: target.url,
+      title: target.title,
+    });
+    await this.setupAutoAttachOnRoot();
 
     return {
       targetId: target.id,
@@ -753,23 +970,69 @@ export class DebugSession extends EventEmitter {
     await this.client.send('Runtime.releaseObjectGroup', { objectGroup });
   }
 
-  // Network domain
+  // Network domain. Network capture is fanned out to every attached session
+  // (root + auto-attached workers/iframes) and stays on for sessions that
+  // attach later, until disableNetwork() is called.
   async enableNetwork(): Promise<void> {
-    await this.client.send('Network.enable');
+    this.networkEnabledGlobal = true;
     this.networkState.setEnabled(true);
+    const sessions = Array.from(this.sessions.values());
+    if (sessions.length === 0) {
+      // Root not yet registered (e.g. raw connect path). Send unsessioned.
+      await this.client.send('Network.enable');
+      return;
+    }
+    const results = await Promise.allSettled(
+      sessions.map((s) => this.client.send('Network.enable', undefined, s.sessionId ?? undefined))
+    );
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i];
+      if (r.status === 'rejected') {
+        debug('Network.enable failed on target %s: %s', sessions[i].targetId, r.reason instanceof Error ? r.reason.message : String(r.reason));
+      }
+    }
   }
 
   async disableNetwork(): Promise<void> {
-    await this.client.send('Network.disable');
+    this.networkEnabledGlobal = false;
+    const sessions = Array.from(this.sessions.values());
+    if (sessions.length === 0) {
+      await this.client.send('Network.disable');
+    } else {
+      await Promise.allSettled(
+        sessions.map((s) => this.client.send('Network.disable', undefined, s.sessionId ?? undefined))
+      );
+    }
     this.networkState.setEnabled(false);
   }
 
-  async getResponseBody(requestId: string): Promise<{ body: string; base64Encoded: boolean }> {
+  async getResponseBody(requestId: string, targetId?: string): Promise<{ body: string; base64Encoded: boolean }> {
+    // Route Network.getResponseBody to the session that owns the request.
+    let sid: string | null | undefined;
+    let owningTargetId = targetId;
+    if (targetId) {
+      sid = this.sessionIdForTarget(targetId);
+      if (sid === undefined) {
+        throw new Error(`Not attached to target ${targetId}`);
+      }
+    } else {
+      const req = this.networkState.getRequest(requestId);
+      if (req) {
+        owningTargetId = req.targetId;
+        sid = this.sessionIdForTarget(req.targetId);
+      }
+      if (sid === undefined) {
+        // Best-effort: try root session.
+        sid = null;
+      }
+    }
+
     const result = await this.client.send<{ body: string; base64Encoded: boolean }>(
       'Network.getResponseBody',
-      { requestId }
+      { requestId },
+      sid ?? undefined
     );
-    this.networkState.setResponseBody(requestId, result.body, result.base64Encoded);
+    this.networkState.setResponseBody(requestId, result.body, result.base64Encoded, owningTargetId);
     return result;
   }
 
@@ -1109,4 +1372,8 @@ export class DebugSession extends EventEmitter {
   async sendCommand<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {
     return this.client.send<T>(method, params);
   }
+}
+
+function isAttachableWorkerType(type: string): boolean {
+  return type === 'service_worker' || type === 'worker' || type === 'shared_worker';
 }
