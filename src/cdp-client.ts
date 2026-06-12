@@ -49,31 +49,40 @@ export class CDPClient extends EventEmitter {
 
     return new Promise((resolve, reject) => {
       debug('Connecting to %s', wsUrl);
-      this.ws = new WebSocket(wsUrl);
+      const ws = new WebSocket(wsUrl);
+      this.ws = ws;
 
       const connectTimeout = setTimeout(() => {
-        this.ws?.close();
+        ws.close();
         reject(new Error(`Connection timeout after ${this.timeout}ms`));
       }, this.timeout);
 
-      this.ws.on('open', () => {
+      // Guard every handler by socket identity. A rapid disconnect+reconnect
+      // (e.g. switchTarget) leaves the old socket's events to fire *after* the
+      // new socket is live; without this guard a stale `close` would flip
+      // `connected` to false and reject the new connection's in-flight requests.
+      ws.on('open', () => {
+        if (this.ws !== ws) return;
         clearTimeout(connectTimeout);
         this.connected = true;
         debug('Connected');
         resolve();
       });
 
-      this.ws.on('message', (data: WebSocket.RawData) => {
+      ws.on('message', (data: WebSocket.RawData) => {
+        if (this.ws !== ws) return;
         this.handleMessage(data.toString());
       });
 
-      this.ws.on('close', () => {
+      ws.on('close', () => {
+        if (this.ws !== ws) return;
         this.connected = false;
         this.rejectAllPending(new Error('Connection closed'));
         this.emit('close');
       });
 
-      this.ws.on('error', (err) => {
+      ws.on('error', (err) => {
+        if (this.ws !== ws) return;
         clearTimeout(connectTimeout);
         debug('WebSocket error: %s', err.message);
         if (!this.connected) {
