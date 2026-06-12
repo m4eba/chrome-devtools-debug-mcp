@@ -336,6 +336,9 @@ export interface LogEntry {
   networkRequestId?: string;
   workerId?: string;
   args?: RemoteObject[];
+  // The target (page / worker / service worker) this entry originated from.
+  // Tagged from the CDP session that delivered the Log.entryAdded event.
+  targetId?: string;
 }
 
 // ServiceWorker types

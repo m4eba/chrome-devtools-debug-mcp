@@ -36,6 +36,7 @@ export const getLogEntries: ToolDefinition = {
   inputSchema: z.object({
     level: z.enum(['verbose', 'info', 'warning', 'error']).optional().describe('Filter by log level'),
     source: z.string().optional().describe('Filter by source (javascript, network, security, etc.)'),
+    targetId: z.string().optional().describe('Filter by originating target (page / worker / service worker). See list_attached_sessions.'),
     limit: z.number().optional().describe('Maximum number of entries to return'),
   }),
   handler: async (session, params) => {
@@ -51,6 +52,10 @@ export const getLogEntries: ToolDefinition = {
         entries = entries.filter((e) => e.source === p.source);
       }
 
+      if (p.targetId) {
+        entries = entries.filter((e) => e.targetId === p.targetId);
+      }
+
       if (p.limit) {
         entries = entries.slice(-p.limit);
       }
@@ -63,6 +68,7 @@ export const getLogEntries: ToolDefinition = {
           text: e.text,
           url: e.url,
           lineNumber: e.lineNumber,
+          targetId: e.targetId,
           timestamp: e.timestamp,
         })),
       }));

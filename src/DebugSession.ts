@@ -76,7 +76,8 @@ export class DebugSession extends EventEmitter {
 
   // Log entries
   private logEntries: LogEntry[] = [];
-  private logEnabled = false;
+  // Whether log_enable was called; used to fan-out Log.enable to new sessions.
+  private logEnabledGlobal = false;
 
   // ServiceWorker state
   private serviceWorkerRegistrations = new Map<string, ServiceWorkerRegistration>();
@@ -302,13 +303,16 @@ export class DebugSession extends EventEmitter {
       this.emit('requestPaused', pausedReq);
     });
 
-    // Log events
-    this.client.on('Log.entryAdded', (params: { entry: LogEntry }) => {
-      this.logEntries.push(params.entry);
+    // Log events. Tag each entry with the originating targetId so multi-session
+    // (page + workers) diagnostics stay distinguishable.
+    this.client.on('Log.entryAdded', (params: { entry: LogEntry }, sessionId?: string | null) => {
+      const targetId = this.targetIdForSession(sessionId ?? null);
+      const entry: LogEntry = { ...params.entry, targetId: targetId ?? undefined };
+      this.logEntries.push(entry);
       if (this.logEntries.length > 1000) {
         this.logEntries.shift();
       }
-      this.emit('logEntry', params.entry);
+      this.emit('logEntry', entry);
     });
 
     // ServiceWorker events
@@ -483,6 +487,7 @@ export class DebugSession extends EventEmitter {
     this.sessionsByCdpId.clear();
     this.networkEnabledGlobal = false;
     this.runtimeEnabledGlobal = false;
+    this.logEnabledGlobal = false;
     this.httpEndpoint = null;
   }
 
@@ -575,6 +580,15 @@ export class DebugSession extends EventEmitter {
         await this.client.send('Runtime.enable', undefined, params.sessionId);
       } catch (e) {
         debug('Runtime.enable on child %s failed: %s', session.targetId, e instanceof Error ? e.message : String(e));
+      }
+    }
+
+    // Honor global Log capture (browser diagnostics) for new sessions.
+    if (this.logEnabledGlobal) {
+      try {
+        await this.client.send('Log.enable', undefined, params.sessionId);
+      } catch (e) {
+        debug('Log.enable on child %s failed: %s', session.targetId, e instanceof Error ? e.message : String(e));
       }
     }
 
@@ -708,6 +722,7 @@ export class DebugSession extends EventEmitter {
     this.sessionsByCdpId.clear();
     this.networkEnabledGlobal = false;
     this.runtimeEnabledGlobal = false;
+    this.logEnabledGlobal = false;
 
     // Connect to new target
     await this.client.connect(target.webSocketDebuggerUrl);
@@ -1281,13 +1296,34 @@ export class DebugSession extends EventEmitter {
 
   // Log domain
   async enableLog(): Promise<void> {
-    await this.client.send('Log.enable');
-    this.logEnabled = true;
+    this.logEnabledGlobal = true;
+    const sessions = Array.from(this.sessions.values());
+    if (sessions.length === 0) {
+      // Root not yet registered (e.g. raw connect path). Send unsessioned.
+      await this.client.send('Log.enable');
+      return;
+    }
+    const results = await Promise.allSettled(
+      sessions.map((s) => this.client.send('Log.enable', undefined, s.sessionId ?? undefined))
+    );
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i];
+      if (r.status === 'rejected') {
+        debug('Log.enable failed on target %s: %s', sessions[i].targetId, r.reason instanceof Error ? r.reason.message : String(r.reason));
+      }
+    }
   }
 
   async disableLog(): Promise<void> {
-    await this.client.send('Log.disable');
-    this.logEnabled = false;
+    this.logEnabledGlobal = false;
+    const sessions = Array.from(this.sessions.values());
+    if (sessions.length === 0) {
+      await this.client.send('Log.disable');
+    } else {
+      await Promise.allSettled(
+        sessions.map((s) => this.client.send('Log.disable', undefined, s.sessionId ?? undefined))
+      );
+    }
   }
 
   async clearLog(): Promise<void> {
