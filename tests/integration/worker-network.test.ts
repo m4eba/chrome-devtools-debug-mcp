@@ -40,6 +40,9 @@ describe.skipIf(!CHROME_AVAILABLE)('Worker Network Capture (multi-session)', () 
   });
 
   it('auto-attaches to a service worker and captures its fetch traffic', async () => {
+    // Enable ServiceWorker domain so getServiceWorkerVersions() can report the
+    // SW running status in diagnostics (helps explain CI-only failures).
+    await session.enableServiceWorker();
     await session.navigate(testServer.url + '/sw-page.html');
 
     // Wait for the SW to register and become active. The page sets
@@ -71,11 +74,25 @@ describe.skipIf(!CHROME_AVAILABLE)('Worker Network Capture (multi-session)', () 
     // Give the SW a moment to issue its outgoing fetch and the Network events
     // to land. Generous timeout: on CI the SW's Network domain can take a while
     // to start reporting after attach.
-    await waitFor(() => {
+    const found = await waitFor(() => {
       const requests = session.networkState.getAllRequests();
       const fromSw = requests.filter((r) => r.targetId === swSession!.targetId);
       return fromSw.length > 0 ? fromSw : null;
-    }, 15000);
+    }, 15000).catch(() => null);
+
+    // On CI this capture fails deterministically while passing locally. Dump
+    // the full state so we can see *why*: which targets exist, what traffic was
+    // captured under which targetId, and whether the SW restarted (new id).
+    if (!found) {
+      const diag = {
+        lookingForSwTargetId: swSession!.targetId,
+        pageTargetId: session.getCurrentTargetId(),
+        attachedNow: session.getAttachedSessions().map((s) => ({ type: s.type, targetId: s.targetId, url: s.url })),
+        swVersions: session.getServiceWorkerVersions().map((v) => ({ versionId: v.versionId, status: v.status, runningStatus: v.runningStatus, targetId: v.targetId })),
+        capturedRequests: session.networkState.getAllRequests().map((r) => ({ url: r.url, method: r.method, status: r.status, targetId: r.targetId })),
+      };
+      throw new Error('SW outgoing fetch not captured.\nDIAGNOSTICS:\n' + JSON.stringify(diag, null, 2));
+    }
 
     const requests = session.networkState.getAllRequests();
     const pageRequests = requests.filter((r) => r.targetId === session.getCurrentTargetId());
