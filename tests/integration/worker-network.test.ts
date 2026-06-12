@@ -65,6 +65,17 @@ describe.skipIf(!CHROME_AVAILABLE)('Worker Network Capture (multi-session)', () 
       `expected a service_worker session.\nattached types: ${JSON.stringify(attached.map((s) => s.type))}\nbrowser targets: ${JSON.stringify(browserTargets.map((t) => ({ type: t.type, url: t.url, attached: t.attached })))}`
     ).toBeDefined();
 
+    // Reload so the page loads UNDER the active SW's control. clients.claim() is
+    // racy on CI — the page can reach 'sw-ready' without the SW actually
+    // controlling its fetches, so the fetch below would bypass the SW (hitting
+    // the network and 404ing) instead of being intercepted. A reload while an
+    // active SW exists for the scope guarantees the page is controlled.
+    await session.reload();
+    await waitFor(async () => {
+      const r = await session.evaluate('!!navigator.serviceWorker.controller', { returnByValue: true });
+      return (r.result as { value?: boolean }).value === true;
+    }, 10000);
+
     // Trigger a request through the SW. The SW intercepts /api/sw-data and
     // issues its own fetch('/api/data'). The page request should appear on the
     // page target; the SW's outgoing fetch on the SW target.
