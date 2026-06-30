@@ -165,6 +165,78 @@ export const getResponseBody: ToolDefinition = {
   },
 };
 
+const WS_OPCODE_NAMES: Record<number, string> = {
+  0: 'continuation',
+  1: 'text',
+  2: 'binary',
+  8: 'close',
+  9: 'ping',
+  10: 'pong',
+};
+
+export const getWebSocketFrames: ToolDefinition = {
+  name: 'get_websocket_frames',
+  description:
+    'Get the frames (messages) of a WebSocket connection. The requestId comes from list_requests (entries with resourceType "WebSocket"). Returns the connection state plus sent/received frames. Requires network_enable to have been active when the connection opened. Use get_request_details on the same requestId for the handshake headers.',
+  inputSchema: z.object({
+    requestId: z.string().describe('WebSocket connection requestId from list_requests'),
+    targetId: z.string().optional().describe('Owning targetId. Optional; resolved automatically when omitted.'),
+    direction: z.enum(['sent', 'received']).optional().describe('Only frames in this direction'),
+    contains: z.string().optional().describe('Only frames whose payload contains this substring'),
+    since: z.number().optional().describe('Only frames with a CDP timestamp greater than this (for incremental polling)'),
+    limit: z.number().optional().describe('Return only the most recent N frames after filtering'),
+  }),
+  handler: async (session, params) => {
+    const p = params as z.infer<typeof getWebSocketFrames.inputSchema>;
+    try {
+      const req = session.networkState.getRequest(p.requestId, p.targetId);
+      if (!req) {
+        return error('Request not found');
+      }
+      if (!req.isWebSocket) {
+        return error('Request is not a WebSocket connection');
+      }
+
+      let frames = req.frames ?? [];
+      if (p.direction) {
+        frames = frames.filter((f) => f.direction === p.direction);
+      }
+      if (p.contains) {
+        frames = frames.filter((f) => f.payload.includes(p.contains as string));
+      }
+      if (p.since !== undefined) {
+        frames = frames.filter((f) => f.ts > (p.since as number));
+      }
+      if (p.limit) {
+        frames = frames.slice(-p.limit);
+      }
+
+      return success(formatObject({
+        requestId: req.requestId,
+        targetId: req.targetId,
+        url: req.url,
+        state: req.wsState,
+        status: req.status,
+        error: req.wsError,
+        storedFrames: req.frames?.length ?? 0,
+        framesDropped: req.framesDropped,
+        count: frames.length,
+        frames: frames.map((f) => ({
+          ts: f.ts,
+          direction: f.direction,
+          type: WS_OPCODE_NAMES[f.opcode] ?? `opcode:${f.opcode}`,
+          payloadLength: f.payloadLength,
+          truncated: f.truncated,
+          binary: f.binary,
+          payload: f.payload,
+        })),
+      }));
+    } catch (e) {
+      return error(e instanceof Error ? e.message : String(e));
+    }
+  },
+};
+
 export const clearRequests: ToolDefinition = {
   name: 'clear_requests',
   description: 'Clear collected network requests. Optional targetId scopes the clear to one session.',
@@ -232,6 +304,7 @@ export const networkTools: ToolDefinition[] = [
   listRequests,
   getRequestDetails,
   getResponseBody,
+  getWebSocketFrames,
   clearRequests,
   getNetworkSummary,
 ];

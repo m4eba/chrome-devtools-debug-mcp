@@ -264,6 +264,66 @@ export class DebugSession extends EventEmitter {
       this.emit('loadingFailed', params, targetId);
     });
 
+    // WebSocket events. CDP emits these automatically whenever the Network
+    // domain is enabled; WS lifecycle and frames never appear via
+    // requestWillBeSent, so they are tracked separately and tagged with the
+    // originating targetId like the HTTP events above.
+    this.client.on('Network.webSocketCreated', (params: unknown, sessionId?: string | null) => {
+      const targetId = this.targetIdForSession(sessionId ?? null);
+      if (!targetId) return;
+      const p = params as { requestId: string; url: string };
+      this.networkState.onWebSocketCreated({ requestId: p.requestId, url: p.url, targetId });
+      this.emit('webSocketCreated', params, targetId);
+    });
+
+    this.client.on('Network.webSocketWillSendHandshakeRequest', (params: unknown, sessionId?: string | null) => {
+      const targetId = this.targetIdForSession(sessionId ?? null);
+      if (!targetId) return;
+      const p = params as { requestId: string; timestamp: number; request: { headers: Record<string, string> } };
+      this.networkState.onWebSocketHandshakeRequest({ requestId: p.requestId, timestamp: p.timestamp, request: p.request, targetId });
+      this.emit('webSocketHandshakeRequest', params, targetId);
+    });
+
+    this.client.on('Network.webSocketHandshakeResponseReceived', (params: unknown, sessionId?: string | null) => {
+      const targetId = this.targetIdForSession(sessionId ?? null);
+      if (!targetId) return;
+      const p = params as { requestId: string; timestamp: number; response: { status: number; statusText: string; headers: Record<string, string> } };
+      this.networkState.onWebSocketHandshakeResponse({ requestId: p.requestId, timestamp: p.timestamp, response: p.response, targetId });
+      this.emit('webSocketHandshakeResponse', params, targetId);
+    });
+
+    this.client.on('Network.webSocketFrameSent', (params: unknown, sessionId?: string | null) => {
+      const targetId = this.targetIdForSession(sessionId ?? null);
+      if (!targetId) return;
+      const p = params as { requestId: string; timestamp: number; response: { opcode: number; mask?: boolean; payloadData: string } };
+      this.networkState.onWebSocketFrame('sent', { requestId: p.requestId, timestamp: p.timestamp, response: p.response, targetId });
+      this.emit('webSocketFrameSent', params, targetId);
+    });
+
+    this.client.on('Network.webSocketFrameReceived', (params: unknown, sessionId?: string | null) => {
+      const targetId = this.targetIdForSession(sessionId ?? null);
+      if (!targetId) return;
+      const p = params as { requestId: string; timestamp: number; response: { opcode: number; mask?: boolean; payloadData: string } };
+      this.networkState.onWebSocketFrame('received', { requestId: p.requestId, timestamp: p.timestamp, response: p.response, targetId });
+      this.emit('webSocketFrameReceived', params, targetId);
+    });
+
+    this.client.on('Network.webSocketFrameError', (params: unknown, sessionId?: string | null) => {
+      const targetId = this.targetIdForSession(sessionId ?? null);
+      if (!targetId) return;
+      const p = params as { requestId: string; timestamp: number; errorMessage: string };
+      this.networkState.onWebSocketFrameError({ requestId: p.requestId, timestamp: p.timestamp, errorMessage: p.errorMessage, targetId });
+      this.emit('webSocketFrameError', params, targetId);
+    });
+
+    this.client.on('Network.webSocketClosed', (params: unknown, sessionId?: string | null) => {
+      const targetId = this.targetIdForSession(sessionId ?? null);
+      if (!targetId) return;
+      const p = params as { requestId: string; timestamp: number };
+      this.networkState.onWebSocketClosed({ requestId: p.requestId, timestamp: p.timestamp, targetId });
+      this.emit('webSocketClosed', params, targetId);
+    });
+
     // Target events: track auto-attached child sessions (workers, iframes, SWs).
     this.client.on('Target.attachedToTarget', (params: unknown) => {
       this.onAttachedToTarget(params as {

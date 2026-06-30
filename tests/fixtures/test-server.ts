@@ -2,6 +2,7 @@ import { createServer, type Server, type IncomingMessage, type ServerResponse } 
 import { readFile } from 'fs/promises';
 import { join, extname } from 'path';
 import { fileURLToPath } from 'url';
+import { WebSocketServer } from 'ws';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
@@ -73,6 +74,19 @@ export async function createTestServer(port = 0): Promise<TestServer> {
 
     server.on('error', reject);
 
+    // WebSocket echo endpoint at /ws: replies "echo:<msg>" to every text
+    // message, so tests can assert both sent and received frames.
+    const wss = new WebSocketServer({ server, path: '/ws' });
+    wss.on('connection', (ws) => {
+      ws.on('message', (data: Buffer, isBinary: boolean) => {
+        if (isBinary) {
+          ws.send(data);
+        } else {
+          ws.send(`echo:${data.toString()}`);
+        }
+      });
+    });
+
     server.listen(port, '127.0.0.1', () => {
       const addr = server.address();
       if (!addr || typeof addr === 'string') {
@@ -89,7 +103,8 @@ export async function createTestServer(port = 0): Promise<TestServer> {
         server,
         close: () =>
           new Promise((resolveClose) => {
-            server.close(() => resolveClose());
+            for (const client of wss.clients) client.terminate();
+            wss.close(() => server.close(() => resolveClose()));
           }),
       });
     });

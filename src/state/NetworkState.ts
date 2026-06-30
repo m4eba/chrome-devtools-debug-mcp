@@ -1,5 +1,16 @@
 import type { RequestData, ResponseData, ResourceType } from '../utils/types.js';
 
+export interface WebSocketFrame {
+  ts: number; // CDP monotonic timestamp
+  direction: 'sent' | 'received';
+  opcode: number;
+  mask?: boolean;
+  payloadLength: number;
+  payload: string; // possibly truncated to maxFramePayload
+  truncated?: boolean;
+  binary?: boolean;
+}
+
 export interface CollectedRequest {
   requestId: string;
   targetId: string;
@@ -20,12 +31,21 @@ export interface CollectedRequest {
   canceled?: boolean;
   responseBody?: string;
   responseBodyBase64?: boolean;
+  // WebSocket-specific (set when resourceType === 'WebSocket')
+  isWebSocket?: boolean;
+  wsState?: 'connecting' | 'open' | 'closed' | 'failed';
+  frames?: WebSocketFrame[];
+  framesDropped?: number;
+  wsError?: string;
 }
 
 export class NetworkState {
   private requests = new Map<string, CollectedRequest>();
   private enabled = false;
   private maxRequests = 1000;
+  // Per-connection ring buffer for WS frames, and per-frame payload cap.
+  private maxFramesPerConnection = 500;
+  private maxFramePayload = 2000;
 
   setEnabled(enabled: boolean): void {
     this.enabled = enabled;
@@ -112,6 +132,128 @@ export class NetworkState {
       req.failed = true;
       req.errorText = params.errorText;
       req.canceled = params.canceled;
+    }
+  }
+
+  // WebSocket lifecycle. CDP routes WS traffic through dedicated webSocket*
+  // events (never requestWillBeSent), so these are stored as their own
+  // CollectedRequest with resourceType 'WebSocket' and a frame buffer.
+  onWebSocketCreated(params: { requestId: string; targetId: string; url: string }): void {
+    if (this.requests.size >= this.maxRequests) {
+      const oldestKey = this.requests.keys().next().value;
+      if (oldestKey) {
+        this.requests.delete(oldestKey);
+      }
+    }
+
+    this.requests.set(this.key(params.requestId, params.targetId), {
+      requestId: params.requestId,
+      targetId: params.targetId,
+      url: params.url,
+      method: 'GET',
+      resourceType: 'WebSocket',
+      startTime: 0,
+      isWebSocket: true,
+      wsState: 'connecting',
+      frames: [],
+      request: {
+        url: params.url,
+        method: 'GET',
+        headers: {},
+        initialPriority: '',
+        referrerPolicy: '',
+      },
+    });
+  }
+
+  onWebSocketHandshakeRequest(params: {
+    requestId: string;
+    targetId: string;
+    timestamp: number;
+    request: { headers: Record<string, string> };
+  }): void {
+    const req = this.requests.get(this.key(params.requestId, params.targetId));
+    if (req) {
+      req.startTime = params.timestamp;
+      req.request.headers = params.request.headers ?? {};
+    }
+  }
+
+  onWebSocketHandshakeResponse(params: {
+    requestId: string;
+    targetId: string;
+    timestamp: number;
+    response: { status: number; statusText: string; headers: Record<string, string> };
+  }): void {
+    const req = this.requests.get(this.key(params.requestId, params.targetId));
+    if (req) {
+      req.status = params.response.status;
+      req.statusText = params.response.statusText;
+      req.wsState = 'open';
+      req.response = {
+        url: req.url,
+        status: params.response.status,
+        statusText: params.response.statusText,
+        headers: params.response.headers ?? {},
+        mimeType: '',
+        connectionReused: false,
+        connectionId: 0,
+        encodedDataLength: 0,
+        securityState: '',
+      };
+    }
+  }
+
+  onWebSocketFrame(
+    direction: 'sent' | 'received',
+    params: {
+      requestId: string;
+      targetId: string;
+      timestamp: number;
+      response: { opcode: number; mask?: boolean; payloadData: string };
+    }
+  ): void {
+    const req = this.requests.get(this.key(params.requestId, params.targetId));
+    if (!req || !req.frames) return;
+
+    const payloadData = params.response.payloadData ?? '';
+    const truncated = payloadData.length > this.maxFramePayload;
+    req.frames.push({
+      ts: params.timestamp,
+      direction,
+      opcode: params.response.opcode,
+      mask: params.response.mask,
+      payloadLength: payloadData.length,
+      payload: truncated ? payloadData.slice(0, this.maxFramePayload) : payloadData,
+      truncated: truncated || undefined,
+      binary: params.response.opcode === 2 || undefined,
+    });
+
+    if (req.frames.length > this.maxFramesPerConnection) {
+      req.frames.shift();
+      req.framesDropped = (req.framesDropped ?? 0) + 1;
+    }
+  }
+
+  onWebSocketFrameError(params: {
+    requestId: string;
+    targetId: string;
+    timestamp: number;
+    errorMessage: string;
+  }): void {
+    const req = this.requests.get(this.key(params.requestId, params.targetId));
+    if (req) {
+      req.wsState = 'failed';
+      req.wsError = params.errorMessage;
+    }
+  }
+
+  onWebSocketClosed(params: { requestId: string; targetId: string; timestamp: number }): void {
+    const req = this.requests.get(this.key(params.requestId, params.targetId));
+    if (req) {
+      if (req.wsState !== 'failed') req.wsState = 'closed';
+      req.endTime = params.timestamp;
+      if (req.startTime > 0) req.duration = params.timestamp - req.startTime;
     }
   }
 

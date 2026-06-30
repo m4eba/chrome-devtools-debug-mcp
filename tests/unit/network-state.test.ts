@@ -201,6 +201,124 @@ describe('NetworkState', () => {
     });
   });
 
+  describe('websocket lifecycle', () => {
+    const openWs = (requestId = 'ws1', targetId = T) => {
+      state.onWebSocketCreated({ requestId, targetId, url: 'ws://example.com/socket' });
+      state.onWebSocketHandshakeRequest({
+        requestId,
+        targetId,
+        timestamp: 1000,
+        request: { headers: { Upgrade: 'websocket' } },
+      });
+      state.onWebSocketHandshakeResponse({
+        requestId,
+        targetId,
+        timestamp: 1001,
+        response: { status: 101, statusText: 'Switching Protocols', headers: { Upgrade: 'websocket' } },
+      });
+    };
+
+    it('tracks the connection as a WebSocket request surfaced by list queries', () => {
+      openWs();
+      const req = state.getRequest('ws1');
+      expect(req).toBeDefined();
+      expect(req?.isWebSocket).toBe(true);
+      expect(req?.resourceType).toBe('WebSocket');
+      expect(req?.url).toBe('ws://example.com/socket');
+      expect(req?.status).toBe(101);
+      expect(req?.wsState).toBe('open');
+      expect(req?.request.headers).toEqual({ Upgrade: 'websocket' });
+      // Visible to the generic request listings used by list_requests.
+      expect(state.getRequestsByType('WebSocket')).toHaveLength(1);
+    });
+
+    it('records sent and received frames with direction and opcode metadata', () => {
+      openWs();
+      state.onWebSocketFrame('sent', {
+        requestId: 'ws1',
+        targetId: T,
+        timestamp: 1002,
+        response: { opcode: 1, mask: true, payloadData: 'ping' },
+      });
+      state.onWebSocketFrame('received', {
+        requestId: 'ws1',
+        targetId: T,
+        timestamp: 1003,
+        response: { opcode: 1, payloadData: 'echo:ping' },
+      });
+
+      const frames = state.getRequest('ws1')?.frames ?? [];
+      expect(frames).toHaveLength(2);
+      expect(frames[0]).toMatchObject({ direction: 'sent', opcode: 1, payload: 'ping', payloadLength: 4 });
+      expect(frames[1]).toMatchObject({ direction: 'received', payload: 'echo:ping' });
+    });
+
+    it('flags binary frames and truncates oversized payloads', () => {
+      openWs();
+      const big = 'x'.repeat(5000);
+      state.onWebSocketFrame('received', {
+        requestId: 'ws1',
+        targetId: T,
+        timestamp: 1002,
+        response: { opcode: 2, payloadData: big },
+      });
+
+      const frame = state.getRequest('ws1')?.frames?.[0];
+      expect(frame?.binary).toBe(true);
+      expect(frame?.truncated).toBe(true);
+      expect(frame?.payloadLength).toBe(5000);
+      expect(frame?.payload.length).toBe(2000);
+    });
+
+    it('drops oldest frames past the per-connection cap and counts the drops', () => {
+      openWs();
+      for (let i = 0; i < 510; i++) {
+        state.onWebSocketFrame('received', {
+          requestId: 'ws1',
+          targetId: T,
+          timestamp: 1000 + i,
+          response: { opcode: 1, payloadData: `frame-${i}` },
+        });
+      }
+
+      const req = state.getRequest('ws1');
+      expect(req?.frames).toHaveLength(500);
+      expect(req?.framesDropped).toBe(10);
+      // Oldest 10 evicted, so the buffer starts at frame-10.
+      expect(req?.frames?.[0].payload).toBe('frame-10');
+    });
+
+    it('marks the connection closed with a computed duration', () => {
+      openWs();
+      state.onWebSocketClosed({ requestId: 'ws1', targetId: T, timestamp: 1500 });
+
+      const req = state.getRequest('ws1');
+      expect(req?.wsState).toBe('closed');
+      expect(req?.endTime).toBe(1500);
+      expect(req?.duration).toBe(500);
+    });
+
+    it('records frame errors as a failed state without clobbering on close', () => {
+      openWs();
+      state.onWebSocketFrameError({ requestId: 'ws1', targetId: T, timestamp: 1400, errorMessage: 'bad frame' });
+      state.onWebSocketClosed({ requestId: 'ws1', targetId: T, timestamp: 1500 });
+
+      const req = state.getRequest('ws1');
+      expect(req?.wsState).toBe('failed');
+      expect(req?.wsError).toBe('bad frame');
+    });
+
+    it('keeps frames isolated per target for colliding requestIds', () => {
+      openWs('ws1', T);
+      openWs('ws1', 'TARGET-SW');
+      state.onWebSocketFrame('sent', { requestId: 'ws1', targetId: T, timestamp: 1002, response: { opcode: 1, payloadData: 'page' } });
+      state.onWebSocketFrame('sent', { requestId: 'ws1', targetId: 'TARGET-SW', timestamp: 1002, response: { opcode: 1, payloadData: 'worker' } });
+
+      expect(state.getRequest('ws1', T)?.frames?.[0].payload).toBe('page');
+      expect(state.getRequest('ws1', 'TARGET-SW')?.frames?.[0].payload).toBe('worker');
+    });
+  });
+
   describe('summary', () => {
     it('should provide accurate summary', () => {
       state.onRequestWillBeSent(baseRequest({ requestId: 'req1', url: 'http://example.com/1' }));
