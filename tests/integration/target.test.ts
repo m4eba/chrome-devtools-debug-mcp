@@ -96,7 +96,10 @@ describe.skipIf(!CHROME_AVAILABLE)('Target Integration', () => {
 
   it('should bring a target to front', async () => {
     const newTarget = await session.createTarget(testServer.url);
-    expect((await session.bringToFront(newTarget.targetId)).targetId).toBe(newTarget.targetId);
+    const result = await session.bringToFront(newTarget.targetId);
+    expect(result.targetId).toBe(newTarget.targetId);
+    // Headless Chrome has no window to raise.
+    expect(result.window.raised).toBe(false);
     expect((await session.bringToFront()).targetId).toBe(session.getCurrentTargetId());
   });
 });

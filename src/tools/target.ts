@@ -1,6 +1,32 @@
 import { z } from 'zod';
 import type { ToolDefinition } from './types.js';
 import { success, error, formatObject } from './types.js';
+import type { DebugSession } from '../DebugSession.js';
+import type { RaiseResult } from '../utils/raise-window.js';
+
+const RAISE_FAILURE_MESSAGES: Record<Extract<RaiseResult, { raised: false }>['reason'], string> = {
+  'unsupported-platform': 'Window raise needs Linux/X11 (DISPLAY set); left to Chrome, the window manager may not bring it in front.',
+  'xdotool-missing': 'xdotool is not installed; window raise left to Chrome, the window manager may not bring it in front.',
+  'no-pid': 'Could not find the local Chrome process (remote Chrome, endpoint without a port, or `ss` unavailable); window raise left to Chrome.',
+  'no-window': 'Chrome process has no X11 window (headless, or running natively on Wayland).',
+  'ambiguous-window': 'Several Chrome windows and none matched the tab title; window not raised.',
+  'activate-failed': 'The window manager did not activate the window.',
+};
+
+function describeWindow(window: RaiseResult): { windowRaised: boolean; message: string } {
+  return window.raised
+    ? { windowRaised: true, message: 'Tab activated and window raised.' }
+    : { windowRaised: false, message: `Tab activated. ${RAISE_FAILURE_MESSAGES[window.reason]}` };
+}
+
+// Focus is best-effort after create/switch already succeeded, so it never fails the tool.
+async function tryFocus(session: DebugSession, targetId: string): Promise<{ windowRaised: boolean; message: string }> {
+  try {
+    return describeWindow((await session.bringToFront(targetId)).window);
+  } catch (e) {
+    return { windowRaised: false, message: `Focus failed: ${e instanceof Error ? e.message : String(e)}` };
+  }
+}
 
 export const createTarget: ToolDefinition = {
   name: 'create_target',
@@ -13,15 +39,13 @@ export const createTarget: ToolDefinition = {
     const p = params as z.infer<typeof createTarget.inputSchema>;
     try {
       const target = await session.createTarget(p.url ?? 'about:blank');
-      if (p.focus) {
-        await session.bringToFront(target.targetId);
-      }
 
       return success(formatObject({
         message: 'New target created. Use switch_target to switch to it.',
         targetId: target.targetId,
         title: target.title,
         url: target.url,
+        ...(p.focus && { focus: await tryFocus(session, target.targetId) }),
       }));
     } catch (e) {
       return error(e instanceof Error ? e.message : String(e));
@@ -40,15 +64,18 @@ export const switchTarget: ToolDefinition = {
     const p = params as z.infer<typeof switchTarget.inputSchema>;
     try {
       const target = await session.switchTarget(p.targetId);
-      if (p.focus) {
-        await session.bringToFront(target.targetId);
-      }
+      const focus = !p.focus
+        ? undefined
+        : target.type === 'page'
+          ? await tryFocus(session, target.targetId)
+          : { windowRaised: false, message: `Not focused: ${target.type} targets have no tab.` };
 
       return success(formatObject({
         message: 'Switched to target. Debugger/network/etc need to be re-enabled.',
         targetId: target.targetId,
         title: target.title,
         url: target.url,
+        ...(focus && { focus }),
       }));
     } catch (e) {
       return error(e instanceof Error ? e.message : String(e));
@@ -59,20 +86,15 @@ export const switchTarget: ToolDefinition = {
 export const bringToFront: ToolDefinition = {
   name: 'bring_to_front',
   description:
-    'Make a tab the active tab and raise its Chrome window. Defaults to the currently attached target. On Linux/X11 the window is raised via xdotool; elsewhere the window manager may refuse the raise, but the tab switch inside Chrome still applies.',
+    'Make a tab the active tab and raise its Chrome window. Defaults to the currently attached target. Reliable window raising needs Linux/X11 with xdotool installed and Chrome on the same machine; otherwise the raise is left to Chrome and the window manager may refuse it. The tab switch inside Chrome always applies. Returns windowRaised and a message explaining any failure.',
   inputSchema: z.object({
     targetId: z.string().optional().describe('Target ID of the page/tab. Defaults to the current target.'),
   }),
   handler: async (session, params) => {
     const p = params as z.infer<typeof bringToFront.inputSchema>;
     try {
-      const result = await session.bringToFront(p.targetId);
-      return success(formatObject({
-        ...result,
-        message: result.windowRaised
-          ? 'Tab activated and window raised.'
-          : 'Tab activated. Window raise left to Chrome (xdotool unavailable or not Linux/X11); the window manager may not bring it in front.',
-      }));
+      const { targetId, window } = await session.bringToFront(p.targetId);
+      return success(formatObject({ targetId, ...describeWindow(window) }));
     } catch (e) {
       return error(e instanceof Error ? e.message : String(e));
     }
