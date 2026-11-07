@@ -93,4 +93,10 @@ describe.skipIf(!CHROME_AVAILABLE)('Target Integration', () => {
     const targets = await session.listTargets();
     expect(targets.length).toBeGreaterThan(0);
   });
+
+  it('should bring a target to front', async () => {
+    const newTarget = await session.createTarget(testServer.url);
+    expect((await session.bringToFront(newTarget.targetId)).targetId).toBe(newTarget.targetId);
+    expect((await session.bringToFront()).targetId).toBe(session.getCurrentTargetId());
+  });
 });

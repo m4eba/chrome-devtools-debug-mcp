@@ -10,6 +10,7 @@ import {
   ConsoleState,
 } from './state/index.js';
 import { withTimeout, PausedError } from './utils/timeout.js';
+import { raiseChromeWindow } from './utils/raise-window.js';
 import type {
   TargetInfo,
   CallFrame,
@@ -743,6 +744,25 @@ export class DebugSession extends EventEmitter {
       attached: false,
       canAccessOpener: false,
     };
+  }
+
+  // Activates the tab, then raises its window via xdotool where available, since
+  // window managers often ignore Chrome's own raise (focus-stealing prevention).
+  async bringToFront(targetId?: string): Promise<{ targetId: string; windowRaised: boolean }> {
+    const id = targetId ?? this.targetId;
+    if (!id) {
+      throw new Error('Not connected to a target. Launch Chrome or connect first.');
+    }
+    await this.client.send('Target.activateTarget', { targetId: id });
+
+    const { targetInfo } = await this.client.send<{ targetInfo: { title: string } }>('Target.getTargetInfo', { targetId: id });
+    const portMatch = this.httpEndpoint?.match(/:(\d+)/);
+    const windowRaised = await raiseChromeWindow({
+      pid: this.launchResult?.process.pid,
+      port: portMatch ? parseInt(portMatch[1], 10) : undefined,
+      title: targetInfo.title,
+    });
+    return { targetId: id, windowRaised };
   }
 
   async closeTarget(targetId: string): Promise<boolean> {

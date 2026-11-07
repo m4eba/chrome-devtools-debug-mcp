@@ -36,8 +36,9 @@ Manage browser targets (pages/tabs).
 | Tool | Description |
 |------|-------------|
 | `list_targets` | List all targets (pages, workers, etc.) |
-| `create_target` | Create a new target (page/tab) |
-| `switch_target` | Switch to a different target (page/tab) |
+| `create_target` | Create a new target (page/tab); `focus: true` brings it to the front |
+| `switch_target` | Switch to a different target (page/tab); `focus: true` brings it to the front |
+| `bring_to_front` | Activate a tab and raise its Chrome window (current target by default) |
 | `close_target` | Close a target (page/tab) |
 
 ### Page Domain
