@@ -41,6 +41,8 @@ Manage browser targets (pages/tabs).
 | `bring_to_front` | Activate a tab and raise its Chrome window (current target by default) |
 | `close_target` | Close a target (page/tab) |
 
+**Window raising:** window managers often block Chrome's own request to come to the front (focus-stealing prevention). On Linux/X11, `bring_to_front` and `focus: true` raise the window with [`xdotool`](https://github.com/jordansissel/xdotool) (`apt install xdotool`). This needs Chrome running on the same machine; for a Chrome you connected to, its process is found via `ss`. On other platforms the tab is still activated, but the window manager may not raise the window. The result includes `windowRaised` and a message explaining any failure.
+
 ### Page Domain
 
 | Tool | Description |
