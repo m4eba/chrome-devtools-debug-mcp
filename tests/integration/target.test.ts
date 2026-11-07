@@ -93,4 +93,13 @@ describe.skipIf(!CHROME_AVAILABLE)('Target Integration', () => {
     const targets = await session.listTargets();
     expect(targets.length).toBeGreaterThan(0);
   });
+
+  it('should bring a target to front', async () => {
+    const newTarget = await session.createTarget(testServer.url);
+    const result = await session.bringToFront(newTarget.targetId);
+    expect(result.targetId).toBe(newTarget.targetId);
+    // Headless Chrome has no window to raise.
+    expect(result.window.raised).toBe(false);
+    expect((await session.bringToFront()).targetId).toBe(session.getCurrentTargetId());
+  });
 });
