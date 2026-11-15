@@ -17,11 +17,10 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
-      # Node 20 ships npm 10.x, which predates OIDC trusted publishing.
-      # Trusted publishing needs npm >= 11.5.1.
+      # Trusted publishing needs npm >= 11.5.1; npm@latest requires Node >= 22.
       - name: Upgrade npm for trusted publishing
         run: npm install -g npm@latest
 
