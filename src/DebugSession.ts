@@ -745,6 +745,16 @@ export class DebugSession extends EventEmitter {
     };
   }
 
+  // Activates the tab; Chrome also asks the window manager to raise its window.
+  async activateTarget(targetId?: string): Promise<string> {
+    const id = targetId ?? this.targetId;
+    if (!id) {
+      throw new Error('Not connected to a target. Launch Chrome or connect first.');
+    }
+    await this.client.send('Target.activateTarget', { targetId: id });
+    return id;
+  }
+
   async closeTarget(targetId: string): Promise<boolean> {
     const result = await this.client.send<{ success: boolean }>('Target.closeTarget', { targetId });
     return result.success;

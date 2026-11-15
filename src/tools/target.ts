@@ -48,6 +48,24 @@ export const switchTarget: ToolDefinition = {
   },
 };
 
+export const activateTarget: ToolDefinition = {
+  name: 'activate_target',
+  description:
+    'Make a tab the active tab and bring its Chrome window to the front (CDP Target.activateTarget). Defaults to the currently attached target. Whether the window actually comes to the front depends on the window manager.',
+  inputSchema: z.object({
+    targetId: z.string().optional().describe('Target ID of the page/tab. Defaults to the current target.'),
+  }),
+  handler: async (session, params) => {
+    const p = params as z.infer<typeof activateTarget.inputSchema>;
+    try {
+      const targetId = await session.activateTarget(p.targetId);
+      return success(formatObject({ message: 'Target activated.', targetId }));
+    } catch (e) {
+      return error(e instanceof Error ? e.message : String(e));
+    }
+  },
+};
+
 export const closeTarget: ToolDefinition = {
   name: 'close_target',
   description: 'Close a target (page/tab) by its ID. Cannot close the currently attached target.',
@@ -101,6 +119,7 @@ export const listAttachedSessions: ToolDefinition = {
 export const targetTools: ToolDefinition[] = [
   createTarget,
   switchTarget,
+  activateTarget,
   closeTarget,
   listAttachedSessions,
 ];
