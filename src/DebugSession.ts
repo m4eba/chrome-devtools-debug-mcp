@@ -10,7 +10,6 @@ import {
   ConsoleState,
 } from './state/index.js';
 import { withTimeout, PausedError } from './utils/timeout.js';
-import { raiseChromeWindow, type RaiseResult } from './utils/raise-window.js';
 import type {
   TargetInfo,
   CallFrame,
@@ -54,8 +53,6 @@ export class DebugSession extends EventEmitter {
   private launchResult: LaunchResult | null = null;
   private targetId: string | null = null;
   private httpEndpoint: string | null = null;
-  // Set by connect(wsUrl), where there is no HTTP endpoint.
-  private wsEndpoint: string | null = null;
 
   // Multi-session tracking: every target we are attached to (root + auto-attached
   // children like workers, service workers, iframes). Keyed by targetId.
@@ -455,7 +452,6 @@ export class DebugSession extends EventEmitter {
 
   async connect(wsUrl: string): Promise<void> {
     await this.client.connect(wsUrl);
-    this.wsEndpoint = wsUrl;
     // We don't know the targetId of the connection; ask CDP.
     try {
       const info = await this.client.send<{ targetInfo: { targetId: string; type: string; url: string; title?: string } }>(
@@ -553,7 +549,6 @@ export class DebugSession extends EventEmitter {
     this.runtimeEnabledGlobal = false;
     this.logEnabledGlobal = false;
     this.httpEndpoint = null;
-    this.wsEndpoint = null;
   }
 
   // ── Session tracking ──────────────────────────────────────────────────────
@@ -750,22 +745,14 @@ export class DebugSession extends EventEmitter {
     };
   }
 
-  // Activates the tab, then raises its window via xdotool where available, since
-  // window managers often ignore Chrome's own raise (focus-stealing prevention).
-  async bringToFront(targetId?: string): Promise<{ targetId: string; window: RaiseResult }> {
+  // Activates the tab; Chrome also asks the window manager to raise its window.
+  async activateTarget(targetId?: string): Promise<string> {
     const id = targetId ?? this.targetId;
     if (!id) {
       throw new Error('Not connected to a target. Launch Chrome or connect first.');
     }
     await this.client.send('Target.activateTarget', { targetId: id });
-
-    const { targetInfo } = await this.client.send<{ targetInfo: { title: string } }>('Target.getTargetInfo', { targetId: id });
-    const window = await raiseChromeWindow({
-      pid: this.launchResult?.process.pid,
-      endpoint: this.httpEndpoint ?? this.wsEndpoint ?? undefined,
-      title: targetInfo.title,
-    });
-    return { targetId: id, window };
+    return id;
   }
 
   async closeTarget(targetId: string): Promise<boolean> {
