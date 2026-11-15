@@ -1,6 +1,6 @@
 {
   "name": "chrome-devtools-debug-mcp",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "MCP server for JavaScript debugging via Chrome DevTools Protocol",
   "type": "module",
   "main": "build/index.js",
